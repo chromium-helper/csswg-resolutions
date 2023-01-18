@@ -1,7 +1,7 @@
 package main
 
 import (
-  "golang.org/x/oauth2"
+  _ "golang.org/x/oauth2"
   "github.com/google/go-github/v49/github"
   "fmt"
   "context"
@@ -38,19 +38,20 @@ func getGithubAPIToken(ctx context.Context) (string, error) {
 
 func main() {
   ctx := context.Background()
-  token, err := getGithubAPIToken(ctx)
-  if err != nil {
-    panic(err)
-  }
+  //token, err := getGithubAPIToken(ctx)
+  //if err != nil {
+  //  panic(err)
+  //}
 
-  ts := oauth2.StaticTokenSource(
-    &oauth2.Token{AccessToken: token},
-  )
-  tc := oauth2.NewClient(ctx, ts)
+  //ts := oauth2.StaticTokenSource(
+  //  &oauth2.Token{AccessToken: token},
+  //)
+  //tc := oauth2.NewClient(ctx, ts)
 
-  client := github.NewClient(tc);
+  //client := github.NewClient(tc);
+  read_client := github.NewClient(nil);
 
-  issues, _, err := client.Issues.ListByRepo(ctx, "w3c", "csswg-drafts", nil)
+  issues, _, err := read_client.Issues.ListByRepo(ctx, "w3c", "csswg-drafts", nil)
   if err != nil {
     panic(err)
   }
