@@ -8,6 +8,8 @@ import (
   "time"
   "log"
   "regexp"
+  "strings"
+  "strconv"
   gcpsm "cloud.google.com/go/secretmanager/apiv1"
   gcpsmpb "cloud.google.com/go/secretmanager/apiv1/secretmanagerpb"
   gcpfs "cloud.google.com/go/firestore"
@@ -148,7 +150,7 @@ type CSSWGResolution struct {
   CommentID int64
   IssueNumber int
 
-  Resolution string
+  Resolutions []string
   CommentURL string
 }
 
@@ -159,16 +161,35 @@ func parseResolutions(comments []*github.IssueComment) ([]*CSSWGResolution, erro
     return nil, fmt.Errorf("regexp.Compile: %v\n", err)
   }
 
+  var results []*CSSWGResolution
   for _, comment := range comments {
-    rtext := r.FindAllString(*comment.Body, -1)
-    fmt.Printf("%v\n", rtext)
+    matches := r.FindAllString(*comment.Body, -1)
+    if len(matches) == 0 {
+      continue
+    }
+
+    url_parts := strings.Split(*comment.IssueURL, "/")
+    issue_number, err := strconv.Atoi(url_parts[len(url_parts)-1])
+    if err != nil {
+      return nil, fmt.Errorf("atoi for url %s: %v\n", comment.IssueURL, err)
+    }
+
+    resolution := &CSSWGResolution{
+      CommentID: *comment.ID,
+      IssueNumber: issue_number,
+      CommentURL: *comment.HTMLURL,
+    }
+    resolution.Resolutions = append(resolution.Resolutions, matches...)
+    results = append(results, resolution)
   }
-  return []*CSSWGResolution{}, nil
+  return results, nil
 }
 
 // Records the resolutions by creating issues if needed
 func (app *App) recordResolutionsIfNeeded(resolutions []*CSSWGResolution) error {
-  // TODO: Implement
+  for _, resolution := range resolutions {
+    fmt.Printf("%v\n", *resolution)
+  }
   return nil
 }
 
