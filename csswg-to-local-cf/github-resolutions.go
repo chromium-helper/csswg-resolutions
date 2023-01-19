@@ -7,6 +7,7 @@ import (
   "context"
   "time"
   "log"
+  "regexp"
   gcpsm "cloud.google.com/go/secretmanager/apiv1"
   gcpsmpb "cloud.google.com/go/secretmanager/apiv1/secretmanagerpb"
   gcpfs "cloud.google.com/go/firestore"
@@ -153,9 +154,14 @@ type CSSWGResolution struct {
 
 // Parse the github resolutions
 func parseResolutions(comments []*github.IssueComment) ([]*CSSWGResolution, error) {
-  // TODO: Implement
+  r, err := regexp.Compile("(?m)^[ `*]*RESOLVED: .*$")
+  if err != nil {
+    return nil, fmt.Errorf("regexp.Compile: %v\n", err)
+  }
+
   for _, comment := range comments {
-    fmt.Printf("CreatedAt %s %v\n", comment.CreatedAt.String(), comment)
+    rtext := r.FindAllString(*comment.Body, -1)
+    fmt.Printf("%v\n", rtext)
   }
   return []*CSSWGResolution{}, nil
 }
