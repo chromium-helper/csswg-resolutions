@@ -16,13 +16,16 @@ const (
   gcpProject = "chromium-csswg-helper"
   gcpGithubAPIKeySecret = "github-api-key"
   gcpFirestoreCollection = "resolution-db"
+  
+  csswgOwner = "w3c"
+  csswgRepo = "csswg-drafts"
 )
 
 type App struct {
   gh_client_ro *github.Client
   gh_client_rw *github.Client
-  ctx context.Context
-  start_time time.Time
+  Ctx context.Context
+  StartTime time.Time
 }
 
 // Creates a new app to use
@@ -30,15 +33,15 @@ func NewApp(ctx context.Context) *App {
   return &App{
     gh_client_ro: github.NewClient(nil),
     gh_client_rw: nil,
-    ctx: ctx,
-    start_time: time.Now(),
+    Ctx: ctx,
+    StartTime: time.Now(),
   }
 }
 
 // Retrieves the github api token from gcp secret manager. Don't use unless you
 // need write access to github.
 func (app *App) getGithubAPIToken() (string, error) {
-  client, err := gcpsm.NewClient(app.ctx)
+  client, err := gcpsm.NewClient(app.Ctx)
   if err != nil {
     return "", fmt.Errorf("gcpsm.NewClient: %v", err)
   }
@@ -52,7 +55,7 @@ func (app *App) getGithubAPIToken() (string, error) {
       ),
   }
 
-  secret, err := client.AccessSecretVersion(app.ctx, req)
+  secret, err := client.AccessSecretVersion(app.Ctx, req)
   if err != nil {
     return "", fmt.Errorf("gcpsm.AccessSecretVersion: %v\n", err)
   }
@@ -72,7 +75,7 @@ func (app *App) ensureGithubRWClient() error {
 
   token_source := oauth2.StaticTokenSource(
       &oauth2.Token{AccessToken: token})
-  token_client := oauth2.NewClient(app.ctx, token_source)
+  token_client := oauth2.NewClient(app.Ctx, token_source)
 
   app.gh_client_rw = github.NewClient(token_client);
   return nil
@@ -80,22 +83,92 @@ func (app *App) ensureGithubRWClient() error {
 
 // Loads the last time this CF ran from gcp firestore
 func (app *App) loadLastRunTime() (time.Time, error) {
-  client, err := gcpfs.NewClient(app.ctx, gcpProject)
+  client, err := gcpfs.NewClient(app.Ctx, gcpProject)
   if err != nil {
     return time.Time{}, fmt.Errorf("gcpfs.NewClient: %v\n", err)
   }
   defer client.Close()
 
-  docsnap, err := client.Collection(gcpFirestoreCollection).Doc("last_run").Get(app.ctx)
+  docsnap, err := client.Collection(gcpFirestoreCollection).Doc("last_run").Get(app.Ctx)
   if err != nil {
     return time.Time{}, fmt.Errorf("client.Collection.Doc.Get: %v\n", err)
   }
 
-  t, ok := docsnap.Data()["time"].(time.Time)
-  if !ok {
-    return time.Time{}, fmt.Errorf("docsnap.DataTo: not ok\n")
+  type Data struct {
+    Time time.Time `firestore:"time"`
   }
-  return t, nil
+  var data Data
+  err = docsnap.DataTo(&data)
+  if err != nil {
+    return time.Time{}, fmt.Errorf("docsnap.DataTo: %v\n", err)
+  }
+  return data.Time, nil
+}
+
+// Get the "best" github client (RW if available, RO otherwise)
+func (app *App) github_client() *github.Client {
+  if app.gh_client_rw != nil {
+    return app.gh_client_rw
+  }
+  return app.gh_client_ro
+}
+
+// Get all the issue comments for csswg since the given time.
+func (app *App) getIssueComments(since time.Time) ([]*github.IssueComment, error) {
+  sort := "created"
+  opts := &github.IssueListCommentsOptions{
+    Sort: &sort,
+    Since: &since,
+    ListOptions: github.ListOptions{ PerPage: 100 },
+  }
+
+  var results []*github.IssueComment
+  for {
+    comments, resp, err := app.github_client().Issues.ListComments(
+      app.Ctx, 
+      csswgOwner,
+      csswgRepo,
+      0,
+      opts,
+    )
+    if err != nil {
+      return nil, err
+    }
+    results = append(results, comments...)
+    if resp.NextPage == 0 {
+      break;
+    }
+    opts.Page = resp.NextPage
+  }
+  return results, nil
+}
+
+type CSSWGResolution struct {
+  CommentID int64
+  IssueNumber int
+
+  Resolution string
+  CommentURL string
+}
+
+// Parse the github resolutions
+func parseResolutions(comments []*github.IssueComment) ([]*CSSWGResolution, error) {
+  // TODO: Implement
+  for _, comment := range comments {
+    fmt.Printf("CreatedAt %s %v\n", comment.CreatedAt.String(), comment)
+  }
+  return []*CSSWGResolution{}, nil
+}
+
+// Records the resolutions by creating issues if needed
+func (app *App) recordResolutionsIfNeeded(resolutions []*CSSWGResolution) error {
+  // TODO: Implement
+  return nil
+}
+
+func (app *App) updateLastRunTime(t time.Time) error {
+  // TODO: Implement
+  return nil
 }
 
 // Main run function for the app.
@@ -104,21 +177,35 @@ func (app *App) run() {
   if err != nil {
     log.Printf("loadLastRunTime: %v\n", err)
     return
-  };
+  }
 
-  // TODO: This isn't implemented!
-  // Some random code
-  //  issues, _, err := app..Issues.ListByRepo(ctx, "w3c", "csswg-drafts", nil)
-  //  if err != nil {
-  //    panic(err)
-  //  }
-  //
-  //  for _, issue := range issues {
-  //    fmt.Printf("%d: %s\n", *issue.Number, *issue.Title)
-  //  }
-  //}
-  //
-  fmt.Printf("last run time %s\n", last_run_time.String())
+  comments, err := app.getIssueComments(last_run_time)
+  if err != nil {
+    log.Printf("getIssueComments: %v\n", err)
+    return
+  }
+
+  resolutions, err := parseResolutions(comments)
+  if err != nil {
+    log.Printf("parseResolutions: %v\n", err)
+    return
+  }
+
+  if len(resolutions) != 0 {
+    app.ensureGithubRWClient()
+  }
+
+  err = app.recordResolutionsIfNeeded(resolutions)
+  if err != nil {
+    log.Printf("recordResolutionsIfNeeded: %v\n", err)
+    return
+  }
+
+  err = app.updateLastRunTime(app.StartTime)
+  if err != nil {
+    log.Printf("updateLastRunTime: %v\n", err)
+    return
+  }
 }
 
 func main() {
