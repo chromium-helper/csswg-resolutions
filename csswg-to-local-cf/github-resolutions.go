@@ -1,7 +1,7 @@
 package main
 
 import (
-   "golang.org/x/oauth2"
+  "golang.org/x/oauth2"
   "github.com/google/go-github/v49/github"
   "fmt"
   "context"
@@ -190,6 +190,11 @@ func (app *App) recordResolutionsIfNeeded(resolutions []*CSSWGResolution) error 
   for _, resolution := range resolutions {
     fmt.Printf("%v\n", *resolution)
   }
+
+  //if /* need to create an issue */ {
+  //  app.ensureGithubRWClient()
+  //}
+
   return nil
 }
 
@@ -216,10 +221,6 @@ func (app *App) run() {
   if err != nil {
     log.Printf("parseResolutions: %v\n", err)
     return
-  }
-
-  if len(resolutions) != 0 {
-    app.ensureGithubRWClient()
   }
 
   err = app.recordResolutionsIfNeeded(resolutions)
