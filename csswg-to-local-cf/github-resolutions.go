@@ -10,6 +10,8 @@ import (
   "regexp"
   "strings"
   "strconv"
+  "google.golang.org/grpc/status"
+  "google.golang.org/grpc/codes"
   gcpsm "cloud.google.com/go/secretmanager/apiv1"
   gcpsmpb "cloud.google.com/go/secretmanager/apiv1/secretmanagerpb"
   gcpfs "cloud.google.com/go/firestore"
@@ -19,7 +21,7 @@ const (
   gcpProject = "chromium-csswg-helper"
   gcpGithubAPIKeySecret = "github-api-key"
   gcpFirestoreCollection = "resolution-db"
-  
+
   csswgOwner = "w3c"
   csswgRepo = "csswg-drafts"
 )
@@ -29,6 +31,14 @@ type App struct {
   gh_client_rw *github.Client
   Ctx context.Context
   StartTime time.Time
+}
+
+type CSSWGResolution struct {
+  CommentID int64
+  IssueNumber int
+
+  Resolutions []string
+  CommentURL string
 }
 
 // Creates a new app to use
@@ -128,7 +138,7 @@ func (app *App) getIssueComments(since time.Time) ([]*github.IssueComment, error
   var results []*github.IssueComment
   for {
     comments, resp, err := app.github_client().Issues.ListComments(
-      app.Ctx, 
+      app.Ctx,
       csswgOwner,
       csswgRepo,
       0,
@@ -144,14 +154,6 @@ func (app *App) getIssueComments(since time.Time) ([]*github.IssueComment, error
     opts.Page = resp.NextPage
   }
   return results, nil
-}
-
-type CSSWGResolution struct {
-  CommentID int64
-  IssueNumber int
-
-  Resolutions []string
-  CommentURL string
 }
 
 // Parse the github resolutions
@@ -185,16 +187,75 @@ func parseResolutions(comments []*github.IssueComment) ([]*CSSWGResolution, erro
   return results, nil
 }
 
+func contains(needle int64, haystack []int64) bool {
+  for _, candidate := range haystack {
+    if needle == candidate {
+      return true
+    }
+  }
+  return false
+}
+
+type FSResolutionData struct {
+  CrbugId int `firestore:"crbug-id"`
+  CsswgDraftsId int `firestore:"csswg-drafts-id"`
+  CsswgResolutionsId int `firestore:"csswg-resolutions-id"`
+  ResolutionCommentIds []int64 `firestore:"resolution-comment-ids"`
+}
+
 // Records the resolutions by creating issues if needed
 func (app *App) recordResolutionsIfNeeded(resolutions []*CSSWGResolution) error {
-  for _, resolution := range resolutions {
-    fmt.Printf("%v\n", *resolution)
+  fsclient, err := gcpfs.NewClient(app.Ctx, gcpProject)
+  if err != nil {
+    return fmt.Errorf("gcpfs.NewClient: %v\n", err)
   }
+  defer fsclient.Close()
 
-  //if /* need to create an issue */ {
-  //  app.ensureGithubRWClient()
-  //}
+  for _, resolution := range resolutions {
+    // See if we have this issue in the firestore.
+    docname := fmt.Sprintf("%d", resolution.IssueNumber)
+    docsnap, err := fsclient.Collection(gcpFirestoreCollection).Doc(docname).Get(app.Ctx)
+    if err != nil && status.Code(err) == codes.NotFound {
+      err = app.createNewIssue(resolution, fsclient, docname)
+      if err != nil {
+        return fmt.Errorf("app.createNewIssue: %v\n", err)
+      }
+      continue
+    } else if err != nil {
+      return fmt.Errorf("fsclient...: %v\n", err)
+    }
 
+    var data FSResolutionData
+    err = docsnap.DataTo(&data)
+    if err != nil {
+      return fmt.Errorf("docsnap.DataTo: %v\n", err)
+    }
+
+    // We already recorded this. 
+    // TODO: The text of the resolution could've changed, but
+    // we're not storing the text to compare though. If needed,
+    // we should change this.
+    if contains(resolution.CommentID, data.ResolutionCommentIds) {
+      continue
+    }
+
+    err = app.addResolutionComment(resolution, fsclient, docname, &data)
+    if err != nil {
+      return fmt.Errorf("app.addResolutionComment: %v\n", err)
+    }
+  }
+  return nil
+}
+
+func (app *App) createNewIssue(resolution *CSSWGResolution, fsclient *gcpfs.Client, docname string) error {
+  //app.ensureGithubRWClient()
+  // TODO: Implement
+  return nil
+}
+
+func (app *App) addResolutionComment(resolution *CSSWGResolution, fsclient *gcpfs.Client, docname string, data *FSResolutionData) error {
+  //app.ensureGithubRWClient()
+  // TODO: Implement
   return nil
 }
 
