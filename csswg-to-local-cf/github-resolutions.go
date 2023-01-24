@@ -24,6 +24,9 @@ const (
 
   csswgOwner = "w3c"
   csswgRepo = "csswg-drafts"
+
+  resOwner = "chromium-helper"
+  resRepo = "csswg-resolutions"
 )
 
 type App struct {
@@ -39,6 +42,13 @@ type CSSWGResolution struct {
 
   Resolutions []string
   CommentURL string
+}
+
+type FSResolutionData struct {
+  CrbugId int `firestore:"crbug-id"`
+  CsswgDraftsId int `firestore:"csswg-drafts-id"`
+  CsswgResolutionsId int `firestore:"csswg-resolutions-id"`
+  ResolutionCommentIds []int64 `firestore:"resolution-comment-ids"`
 }
 
 // Creates a new app to use
@@ -147,7 +157,13 @@ func (app *App) getIssueComments(since time.Time) ([]*github.IssueComment, error
     if err != nil {
       return nil, err
     }
-    results = append(results, comments...)
+    for _, comment := range comments {
+      if comment.GetCreatedAt().Before(since) {
+        continue
+      }
+      results = append(results, comment)
+    }
+
     if resp.NextPage == 0 {
       break;
     }
@@ -196,13 +212,6 @@ func contains(needle int64, haystack []int64) bool {
   return false
 }
 
-type FSResolutionData struct {
-  CrbugId int `firestore:"crbug-id"`
-  CsswgDraftsId int `firestore:"csswg-drafts-id"`
-  CsswgResolutionsId int `firestore:"csswg-resolutions-id"`
-  ResolutionCommentIds []int64 `firestore:"resolution-comment-ids"`
-}
-
 // Records the resolutions by creating issues if needed
 func (app *App) recordResolutionsIfNeeded(resolutions []*CSSWGResolution) error {
   fsclient, err := gcpfs.NewClient(app.Ctx, gcpProject)
@@ -247,20 +256,91 @@ func (app *App) recordResolutionsIfNeeded(resolutions []*CSSWGResolution) error 
   return nil
 }
 
+func createIssueText(resolutions []string, commentURL string) string {
+  body := fmt.Sprintf("CSSWG added the following resolution(s):\n\n")
+  for _, resolution := range resolutions {
+    body += fmt.Sprintf("> %s\n", resolution)
+  }
+  body += fmt.Sprintf("\n\nin %s\n", "TODO: commentURL")
+  body += fmt.Sprintf("TODO: Add some more help text\n")
+  return body
+}
+
 func (app *App) createNewIssue(resolution *CSSWGResolution, fsclient *gcpfs.Client, docname string) error {
-  //app.ensureGithubRWClient()
-  // TODO: Implement
+  app.ensureGithubRWClient()
+  csswgissue, _, err := app.github_client().Issues.Get(app.Ctx, csswgOwner, csswgRepo, resolution.IssueNumber)
+  if err != nil {
+    return fmt.Errorf("gh.Issues.Get: %v\n", err)
+  }
+
+  title := *csswgissue.Title
+  body := createIssueText(resolution.Resolutions, resolution.CommentURL)
+  var labels []string
+  for _, rlabel := range csswgissue.Labels {
+    if strings.HasPrefix(rlabel.GetName(), "css-") {
+      labels = append(labels, rlabel.GetName())
+    }
+  }
+
+  request := &github.IssueRequest{
+    Title: &title,
+    Body: &body,
+    Labels: &labels,
+  }
+
+  resissue, _, err := app.github_client().Issues.Create(app.Ctx, resOwner, resRepo, request)
+  if err != nil {
+    return fmt.Errorf("github.CreateIssue: %v\n", err)
+  }
+  log.Printf("Created new issue #%d: %s\n", resissue.GetNumber(), title)
+
+  fsresolution := &FSResolutionData{
+    CrbugId: 0,
+    CsswgDraftsId: csswgissue.GetNumber(),
+    CsswgResolutionsId: resissue.GetNumber(),
+    ResolutionCommentIds: []int64{resolution.CommentID},
+  }
+  return app.saveFsResolution(fsclient, docname, fsresolution)
+}
+
+func (app *App) saveFsResolution(fsclient *gcpfs.Client, docname string, fsresolution *FSResolutionData) error {
+  _, err := fsclient.Collection(gcpFirestoreCollection).Doc(docname).Set(app.Ctx, fsresolution)
+  if err != nil {
+    return fmt.Errorf("fsclient.C.Doc.Set: %v\n", err)
+  }
   return nil
 }
 
 func (app *App) addResolutionComment(resolution *CSSWGResolution, fsclient *gcpfs.Client, docname string, data *FSResolutionData) error {
-  //app.ensureGithubRWClient()
-  // TODO: Implement
-  return nil
+  app.ensureGithubRWClient()
+  body := createIssueText(resolution.Resolutions, resolution.CommentURL)
+  comment := &github.IssueComment{ Body: &body }
+  _, _, err := app.github_client().Issues.CreateComment(app.Ctx, resOwner, resRepo, data.CsswgResolutionsId, comment)
+  if err != nil {
+    return fmt.Errorf("github.CreateComment: %v\n", err)
+  }
+  log.Printf("Added comment to issue #%d\n", data.CsswgResolutionsId)
+
+  data.ResolutionCommentIds = append(data.ResolutionCommentIds, resolution.CommentID)
+  return app.saveFsResolution(fsclient, docname, data)
 }
 
 func (app *App) updateLastRunTime(t time.Time) error {
-  // TODO: Implement
+  client, err := gcpfs.NewClient(app.Ctx, gcpProject)
+  if err != nil {
+    return fmt.Errorf("gcpfs.NewClient: %v\n", err)
+  }
+  defer client.Close()
+
+  type Data struct {
+    Time time.Time `firestore:"time"`
+  }
+  data := &Data{ Time: t }
+
+  _, err = client.Collection(gcpFirestoreCollection).Doc("last_run").Set(app.Ctx, data)
+  if err != nil {
+    return fmt.Errorf("client.C.Doc.Set: %v\n", err)
+  }
   return nil
 }
 
