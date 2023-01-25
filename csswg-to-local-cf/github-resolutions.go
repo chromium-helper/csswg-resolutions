@@ -1,4 +1,5 @@
-package main
+// Package p contains a Pub/Sub Cloud Function.
+package p
 
 import (
   "golang.org/x/oauth2"
@@ -240,7 +241,7 @@ func (app *App) recordResolutionsIfNeeded(resolutions []*CSSWGResolution) error 
       return fmt.Errorf("docsnap.DataTo: %v\n", err)
     }
 
-    // We already recorded this. 
+    // We already recorded this.
     // TODO: The text of the resolution could've changed, but
     // we're not storing the text to compare though. If needed,
     // we should change this.
@@ -267,7 +268,10 @@ func createIssueText(resolutions []string, commentURL string) string {
 }
 
 func (app *App) createNewIssue(resolution *CSSWGResolution, fsclient *gcpfs.Client, docname string) error {
-  app.ensureGithubRWClient()
+  err := app.ensureGithubRWClient()
+  if err != nil {
+    return fmt.Errorf("ensure rw client: %v\n", err)
+  }
   csswgissue, _, err := app.github_client().Issues.Get(app.Ctx, csswgOwner, csswgRepo, resolution.IssueNumber)
   if err != nil {
     return fmt.Errorf("gh.Issues.Get: %v\n", err)
@@ -282,10 +286,13 @@ func (app *App) createNewIssue(resolution *CSSWGResolution, fsclient *gcpfs.Clie
     }
   }
 
+  log.Printf("labels %v", labels)
   request := &github.IssueRequest{
     Title: &title,
     Body: &body,
-    Labels: &labels,
+  }
+  if len(labels) != 0 {
+    request.Labels = &labels
   }
 
   resissue, _, err := app.github_client().Issues.Create(app.Ctx, resOwner, resRepo, request)
@@ -312,10 +319,13 @@ func (app *App) saveFsResolution(fsclient *gcpfs.Client, docname string, fsresol
 }
 
 func (app *App) addResolutionComment(resolution *CSSWGResolution, fsclient *gcpfs.Client, docname string, data *FSResolutionData) error {
-  app.ensureGithubRWClient()
+  err := app.ensureGithubRWClient()
+  if err != nil {
+    return fmt.Errorf("ensure rw client: %v\n", err)
+  }
   body := createIssueText(resolution.Resolutions, resolution.CommentURL)
   comment := &github.IssueComment{ Body: &body }
-  _, _, err := app.github_client().Issues.CreateComment(app.Ctx, resOwner, resRepo, data.CsswgResolutionsId, comment)
+  _, _, err = app.github_client().Issues.CreateComment(app.Ctx, resOwner, resRepo, data.CsswgResolutionsId, comment)
   if err != nil {
     return fmt.Errorf("github.CreateComment: %v\n", err)
   }
@@ -345,38 +355,47 @@ func (app *App) updateLastRunTime(t time.Time) error {
 }
 
 // Main run function for the app.
-func (app *App) run() {
+func (app *App) run() error {
   last_run_time, err := app.loadLastRunTime()
   if err != nil {
     log.Printf("loadLastRunTime: %v\n", err)
-    return
+    return err
   }
+  log.Printf("last run time %v", last_run_time.String())
 
   comments, err := app.getIssueComments(last_run_time)
   if err != nil {
     log.Printf("getIssueComments: %v\n", err)
-    return
+    return err
   }
 
   resolutions, err := parseResolutions(comments)
   if err != nil {
     log.Printf("parseResolutions: %v\n", err)
-    return
+    return err
   }
+  log.Printf("resolutions %v\n", resolutions)
 
   err = app.recordResolutionsIfNeeded(resolutions)
   if err != nil {
     log.Printf("recordResolutionsIfNeeded: %v\n", err)
-    return
+    return err
   }
 
   err = app.updateLastRunTime(app.StartTime)
   if err != nil {
     log.Printf("updateLastRunTime: %v\n", err)
-    return
+    return err
   }
+  return nil
 }
 
-func main() {
-  NewApp(context.Background()).run()
+type PubSubMessage struct {
+	Data []byte `json:"data"`
 }
+
+// HelloPubSub consumes a Pub/Sub message.
+func HelloPubSub(ctx context.Context, m PubSubMessage) error {
+	return NewApp(ctx).run()
+}
+
