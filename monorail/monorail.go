@@ -24,7 +24,8 @@ func contains(needle string, haystack []string) bool {
   return false
 }
 
-func createIdToken(ctx context.Context, audience string, idtoken_opts idtoken.ClientOption) (*oauth2.TokenSource, *oauth2.Token, error) {
+func createIdToken(ctx context.Context, audience string, idtoken_opts idtoken.ClientOption) (
+    *oauth2.TokenSource, *oauth2.Token, error) {
   token_source, err := idtoken.NewTokenSource(ctx, audience, idtoken_opts)
 	if err != nil {
 		return nil, nil, fmt.Errorf("idtoken.NewTokenSource: %v", err)
@@ -48,7 +49,8 @@ func createHttpClient(token_source *oauth2.TokenSource) (*http.Client, error) {
   }, nil
 }
 
-func NewIssuesService(ctx context.Context, target string, idtoken_opts idtoken.ClientOption) (*IssuesService, error) {
+func NewIssuesService(ctx context.Context, target string, idtoken_opts idtoken.ClientOption) (
+    *IssuesService, error) {
   if !contains(target, []string{"prod", "dev", "staging"}) {
     return nil, fmt.Errorf("target must be one of prod, dev, staging\n")
   }
