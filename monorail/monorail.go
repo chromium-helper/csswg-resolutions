@@ -1,9 +1,12 @@
 package monorail
 
 import (
+  "bytes"
   "context"
+  "strings"
   "fmt"
   "net/http"
+  "io/ioutil"
   "time"
   "golang.org/x/oauth2"
   "google.golang.org/api/idtoken"
@@ -56,7 +59,7 @@ func NewIssuesService(ctx context.Context, target string, idtoken_opts idtoken.C
   }
 
   audience := fmt.Sprintf("https://monorail-%s.appspot.com", target)
-  api_base := fmt.Sprintf("https://api-dot-monorail-%s.appspot.com/prpc/", target)
+  api_base := fmt.Sprintf("https://api-dot-monorail-%s.appspot.com/prpc", target)
 
   token_source, token, err := createIdToken(ctx, audience, idtoken_opts)
   if err != nil {
@@ -73,4 +76,67 @@ func NewIssuesService(ctx context.Context, target string, idtoken_opts idtoken.C
     HttpClient: http_client,
     ApiBase: api_base,
 	}, nil
+}
+
+func (s *IssuesService) invokeApi(payload []byte, service string, method string) ([]byte, error) {
+  url := fmt.Sprintf("%s/monorail.v3.%s/%s\n", s.ApiBase, service, method);
+
+  request, err := http.NewRequest("POST", url, bytes.NewBuffer(payload))
+  if err != nil {
+    return nil, fmt.Errorf("http.NewRequest: %v\n", err)
+  }
+
+  request.Header.Add("Authorization", fmt.Sprintf("Bearer %s\n", s.Token.AccessToken))
+  request.Header.Add("Content-Type", "application/json")
+  request.Header.Add("Accept", "application/json")
+
+  response, err := s.HttpClient.Do(request)
+  if err != nil {
+    return nil, fmt.Errorf("http.Client.Do: %v\n", err)
+  }
+  defer response.Body.Close()
+
+  if response.StatusCode != 200 {
+    return nil, fmt.Errorf("http response %d (%s)\n", response.StatusCode, http.StatusText(response.StatusCode))
+  }
+
+  result, err := ioutil.ReadAll(response.Body)
+  if err != nil {
+    return nil, fmt.Errorf("ioutil.ReadAll: %v\n", err)
+  }
+
+  return result[4:], nil
+}
+
+type CreateIssueRequest struct {
+  // "chromium"
+  Project string
+
+  Summary string
+  Description string
+
+  Components []string
+}
+
+func (s *IssuesService) CreateIssue(request *CreateIssueRequest) error {
+  var components []string
+  for _, component := range request.Components {
+    components = append(components, `{ "component": "projects/%s/componentDefs/%s" }`, request.Project, component)
+  }
+  json := fmt.Sprintf(`{
+    "parent": "projects/%s",
+    "issue": {
+      "status": "Untriaged",
+      "summary": "%s",
+      "components": [%s],
+      "description": "%s"
+    }
+  }`, request.Project, request.Summary, strings.Join(components, ","), request.Description)
+
+  result, err := s.invokeApi([]byte(json), "Issues", "MakeIssue")
+  if err != nil {
+    return fmt.Errorf("invokeApi: %v\n", err)
+  }
+  fmt.Printf("%v\n", result)
+  return nil
 }
