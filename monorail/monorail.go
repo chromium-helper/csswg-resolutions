@@ -79,7 +79,7 @@ func NewIssuesService(ctx context.Context, target string, idtoken_opts idtoken.C
 }
 
 func (s *IssuesService) invokeApi(payload []byte, service string, method string) ([]byte, error) {
-  url := fmt.Sprintf("%s/monorail.v3.%s/%s\n", s.ApiBase, service, method);
+  url := fmt.Sprintf("%s/monorail.v3.%s/%s", s.ApiBase, service, method);
 
   request, err := http.NewRequest("POST", url, bytes.NewBuffer(payload))
   if err != nil {
@@ -96,13 +96,13 @@ func (s *IssuesService) invokeApi(payload []byte, service string, method string)
   }
   defer response.Body.Close()
 
-  if response.StatusCode != 200 {
-    return nil, fmt.Errorf("http response %d (%s)\n", response.StatusCode, http.StatusText(response.StatusCode))
-  }
-
   result, err := ioutil.ReadAll(response.Body)
   if err != nil {
     return nil, fmt.Errorf("ioutil.ReadAll: %v\n", err)
+  }
+
+  if response.StatusCode != 200 {
+    return nil, fmt.Errorf("http response %d (%s)\nbody: %s", response.StatusCode, http.StatusText(response.StatusCode), string(result))
   }
 
   return result[4:], nil
@@ -121,22 +121,34 @@ type CreateIssueRequest struct {
 func (s *IssuesService) CreateIssue(request *CreateIssueRequest) error {
   var components []string
   for _, component := range request.Components {
-    components = append(components, `{ "component": "projects/%s/componentDefs/%s" }`, request.Project, component)
+    components = append(components, fmt.Sprintf(`{ "component": "projects/%s/componentDefs/%s" }`, request.Project, component))
   }
+  // Field values ids are here:
+  // https://bugs.chromium.org/p/chromium/adminLabels
+  // 10 - Type
+  // 11 - Pri
+  typeField := fmt.Sprintf("projects/%s/fieldDefs/10", request.Project)
+  priField := fmt.Sprintf("projects/%s/fieldDefs/11", request.Project)
   json := fmt.Sprintf(`{
     "parent": "projects/%s",
     "issue": {
-      "status": "Untriaged",
+      "status": { "status": "Untriaged" },
       "summary": "%s",
       "components": [%s],
-      "description": "%s"
-    }
-  }`, request.Project, request.Summary, strings.Join(components, ","), request.Description)
+      "field_values": [
+        { "field": "%s", "value": "2" },
+        { "field": "%s", "value": "Task" }
+      ]
+    },
+    "description": "%s"
+  }`, request.Project, request.Summary, strings.Join(components, ","), priField, typeField, request.Description)
+  
+  fmt.Printf("req\n%s\n", json);
 
   result, err := s.invokeApi([]byte(json), "Issues", "MakeIssue")
   if err != nil {
     return fmt.Errorf("invokeApi: %v\n", err)
   }
-  fmt.Printf("%v\n", result)
+  fmt.Printf("resp\n%s\n", string(result))
   return nil
 }
