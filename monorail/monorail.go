@@ -9,7 +9,6 @@ import (
   "io/ioutil"
   "time"
   "golang.org/x/oauth2"
-  "google.golang.org/api/idtoken"
 )
 
 type IssuesService struct {
@@ -27,23 +26,23 @@ func contains(needle string, haystack []string) bool {
   return false
 }
 
-func createIdToken(ctx context.Context, audience string, idtoken_opts idtoken.ClientOption) (
-    *oauth2.TokenSource, *oauth2.Token, error) {
-  token_source, err := idtoken.NewTokenSource(ctx, audience, idtoken_opts)
-	if err != nil {
-		return nil, nil, fmt.Errorf("idtoken.NewTokenSource: %v", err)
-	}
+//func createIdToken(ctx context.Context, audience string, idtoken_opts idtoken.ClientOption) (
+//    *oauth2.TokenSource, *oauth2.Token, error) {
+//  token_source, err := idtoken.NewTokenSource(ctx, audience, idtoken_opts)
+//	if err != nil {
+//		return nil, nil, fmt.Errorf("idtoken.NewTokenSource: %v", err)
+//	}
+//
+//	token, err := token_source.Token()
+//	if err != nil {
+//		return nil, nil, fmt.Errorf("token_source.Token: %v\n", err)
+//	}
+//  return &token_source, token, nil;
+//}
 
-	token, err := token_source.Token()
-	if err != nil {
-		return nil, nil, fmt.Errorf("token_source.Token: %v\n", err)
-	}
-  return &token_source, token, nil;
-}
-
-func createHttpClient(token_source *oauth2.TokenSource) (*http.Client, error) {
+func createHttpClient(token_source oauth2.TokenSource) (*http.Client, error) {
   transport := &oauth2.Transport{
-    Source: *token_source,
+    Source: token_source,
     Base: http.DefaultTransport,
   }
   return &http.Client{
@@ -52,18 +51,24 @@ func createHttpClient(token_source *oauth2.TokenSource) (*http.Client, error) {
   }, nil
 }
 
-func NewIssuesService(ctx context.Context, target string, idtoken_opts idtoken.ClientOption) (
+func GetAudience(target string) (string, error) {
+  if !contains(target, []string{"prod", "dev", "staging"}) {
+    return "", fmt.Errorf("target must be one of prod, dev, staging\n")
+  }
+  return fmt.Sprintf("https://monorail-%s.appspot.com", target), nil
+}
+
+func NewIssuesService(ctx context.Context, target string, token_source oauth2.TokenSource) (
     *IssuesService, error) {
   if !contains(target, []string{"prod", "dev", "staging"}) {
     return nil, fmt.Errorf("target must be one of prod, dev, staging\n")
   }
 
-  audience := fmt.Sprintf("https://monorail-%s.appspot.com", target)
   api_base := fmt.Sprintf("https://api-dot-monorail-%s.appspot.com/prpc", target)
 
-  token_source, token, err := createIdToken(ctx, audience, idtoken_opts)
+  token, err := token_source.Token()
   if err != nil {
-    return nil, fmt.Errorf("createIdToken: %v\n", err)
+    return nil, fmt.Errorf("token_source.Token: %v\n", err)
   }
 
   http_client, err := createHttpClient(token_source)
