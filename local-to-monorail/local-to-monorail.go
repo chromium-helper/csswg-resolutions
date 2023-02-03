@@ -185,6 +185,10 @@ func processIssuesEvent(event *github.IssuesEvent) error {
     return nil
   }
 
+  if event.GetIssue().GetState() == "closed" {
+    return nil
+  }
+
   for _, label := range event.GetIssue().Labels {
     if label.GetName() == "meta" {
       return nil
