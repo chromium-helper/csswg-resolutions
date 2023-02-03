@@ -4,6 +4,7 @@ import (
   "bytes"
   "context"
   "strings"
+  "strconv"
   "fmt"
   "net/http"
   "io/ioutil"
@@ -145,7 +146,7 @@ func (s *IssuesService) CreateIssue(request *CreateIssueRequest) (*Issue, error)
   // 11 - Pri
   typeField := fmt.Sprintf("projects/%s/fieldDefs/10", request.Project)
   priField := fmt.Sprintf("projects/%s/fieldDefs/11", request.Project)
-  json := fmt.Sprintf(`{
+  json_request := fmt.Sprintf(`{
     "parent": "projects/%s",
     "issue": {
       "status": { "status": "Untriaged" },
@@ -165,7 +166,7 @@ func (s *IssuesService) CreateIssue(request *CreateIssueRequest) (*Issue, error)
   typeField,
   request.Description)
   
-  result, err := s.invokeApi([]byte(json), "Issues", "MakeIssue")
+  result, err := s.invokeApi([]byte(json_request), "Issues", "MakeIssue")
   if err != nil {
     return nil, fmt.Errorf("invokeApi: %v\n", err)
   }
@@ -176,7 +177,7 @@ func (s *IssuesService) CreateIssue(request *CreateIssueRequest) (*Issue, error)
 	}
 
   name_parts := strings.Split(monorail_issue.Name, "/")
-  id, err := strings.Atoi(name_parts[len(name_parts) - 1])
+  id, err := strconv.Atoi(name_parts[len(name_parts) - 1])
   if err != nil {
     return nil, fmt.Errorf("Atoi of %s: %v\n", name_parts[len(name_parts) - 1], err)
   }

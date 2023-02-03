@@ -2,19 +2,18 @@
 package foo
 
 import (
-  "golang.org/x/oauth2"
+	"context"
 	"fmt"
+	"github.com/chromium-helper/csswg-resolutions/monorail"
+	"google.golang.org/api/idtoken"
 	"log"
 	"net/http"
-	"context"
-	"google.golang.org/api/idtoken"
-	"github.com/chromium-helper/csswg-resolutions/monorail"
-  "context"
   "github.com/google/go-github/github"
-  gcpfs "cloud.google.com/go/firestore"
-  "string"
-  "regexp"
+  "golang.org/x/oauth2"
   "os"
+  "regexp"
+  "strings"
+  gcpfs "cloud.google.com/go/firestore"
   gcpsm "cloud.google.com/go/secretmanager/apiv1"
   gcpsmpb "cloud.google.com/go/secretmanager/apiv1/secretmanagerpb"
 )
@@ -33,21 +32,25 @@ type FSResolutionData struct {
 }
 
 func fileMonorailIssue(ghissue *github.Issue, component string) (*monorail.Issue, error) {
+  audience, err := monorail.GetAudience("prod")
+  if err != nil {
+    return nil, fmt.Errorf("GetAudience: %v\n", err)
+  }
+
   ctx := context.Background()
-  token_source, err := idtoken.NewTokenSource(ctx, monorail.GetAudience("prod"))
+  token_source, err := idtoken.NewTokenSource(ctx, audience)
   if err != nil {
     return nil, fmt.Errorf("NewTokenSource: %v\n", err)
   }
 
   service, err := monorail.NewIssuesService(ctx, "prod", token_source)
   if err != nil {
-    return nil, fmt.Error("monorail.NewIssuesService: %v\n", err)
+    return nil, fmt.Errorf("monorail.NewIssuesService: %v\n", err)
   }
 
   re := regexp.MustCompile(`\r?\n`)
-  input = re.ReplaceAllString(input, " ")
 
-  description := re.ReplaceAllStrings(ghissue.GetBody(), "\\n")
+  description := re.ReplaceAllString(ghissue.GetBody(), "\\n")
   description += `\n\n`
   description += fmt.Sprintf("If no action is needed, feel free to close this bug. Otherwise, please prioritize the work needed for the above resolutions.");
   description += `\n\n`
@@ -55,11 +58,11 @@ func fileMonorailIssue(ghissue *github.Issue, component string) (*monorail.Issue
 
   request := &monorail.CreateIssueRequest{
     Project: "chromium",
-    Summary: ghissue.GetTitle()
-    Description: description
+    Summary: ghissue.GetTitle(),
+    Description: description,
     Components: []string{component},
   }
-  issue, err = service.CreateIssue(request)
+  issue, err := service.CreateIssue(request)
   if err != nil {
     return nil, fmt.Errorf("monorail.CreateIssue: %v\n", err)
   }
@@ -67,7 +70,8 @@ func fileMonorailIssue(ghissue *github.Issue, component string) (*monorail.Issue
 }
 
 func getGithubAPIToken() (string, error) {
-  client, err := gcpsm.NewClient(context.Background())
+  ctx := context.Background()
+  client, err := gcpsm.NewClient(ctx)
   if err != nil {
     return "", fmt.Errorf("gcpsm.NewClient: %v", err)
   }
@@ -81,7 +85,7 @@ func getGithubAPIToken() (string, error) {
       ),
   }
 
-  secret, err := client.AccessSecretVersion(app.Ctx, req)
+  secret, err := client.AccessSecretVersion(ctx, req)
   if err != nil {
     return "", fmt.Errorf("gcpsm.AccessSecretVersion: %v\n", err)
   }
@@ -113,6 +117,7 @@ func commentAndClose(ghissue *github.Issue, crbug_id int) error {
     ctx, owner, repo, ghissue.GetNumber(), comment)
   if err != nil {
     return fmt.Errorf("Issues.CreateComment: %v\n", err)
+  }
 
   // Close the issue.
   new_state := "closed"
@@ -125,7 +130,9 @@ func commentAndClose(ghissue *github.Issue, crbug_id int) error {
   return nil
 }
 
-func saveFsData(fsdata FSResolutionData) error {
+func saveFsData(fsdata *FSResolutionData) error {
+  ctx := context.Background()
+
   client, err := gcpfs.NewClient(ctx, gcpProject)
   if err != nil {
     return fmt.Errorf("gcpfs.NewClient: %v\n", err)
@@ -133,7 +140,7 @@ func saveFsData(fsdata FSResolutionData) error {
 
   docname := fmt.Sprintf("%d", fsdata.CsswgDraftsId)
   _, err = client.Collection(gcpFirestoreCollection).Doc(docname).Update(
-      []gcpfs.Update{{ Path: "crbug-id", Value: fsdata.CrbugId }})
+      ctx, []gcpfs.Update{{ Path: "crbug-id", Value: fsdata.CrbugId }})
   if err != nil {
     return fmt.Errorf("doc.Update: %v\n", err)
   }
@@ -141,6 +148,8 @@ func saveFsData(fsdata FSResolutionData) error {
 }
 
 func loadFsResolutionData(number int) (*FSResolutionData, error) {
+  ctx := context.Background()
+
   client, err := gcpfs.NewClient(ctx, gcpProject)
   if err != nil {
     return nil, fmt.Errorf("gcpfs.NewClient: %v\n", err)
@@ -179,7 +188,6 @@ func processIssuesEvent(event *github.IssuesEvent) error {
     }
   }
 
-  ctx := context.Background()
   fsdata, err := loadFsResolutionData(event.GetIssue().GetNumber())
   if err != nil {
     return fmt.Errorf("loadFsResolutionData: %v\n", err)
