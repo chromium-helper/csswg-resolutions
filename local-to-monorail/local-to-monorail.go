@@ -107,7 +107,10 @@ func commentAndClose(ghissue *github.Issue, crbug_id int) error {
   client := github.NewClient(token_client);
 
   owner := ghissue.GetRepository().GetOwner().GetLogin()
+  owner_name := ghissue.GetRepository().GetOwner().GetName()
   repo := ghissue.GetRepository().GetName()
+
+  fmt.Println("owner %s repo %s owner_name %s\n", owner, repo, owner_name)
 
   // Add a comment
   comment_text := fmt.Sprintf("I have filed crbug.com/%d\n\n", crbug_id)
@@ -198,23 +201,23 @@ func processIssuesEvent(event *github.IssuesEvent) error {
     return fmt.Errorf("crbug already filed %d\n", fsdata.CrbugId)
   }
 
-  component := strings.Split(event.GetLabel().GetName(), ":")[1]
-  crbug, err := fileMonorailIssue(event.GetIssue(), component)
-  if err != nil {
-    return fmt.Errorf("fileMonorailIssue: %v\n", err)
-  }
+  //component := strings.Split(event.GetLabel().GetName(), ":")[1]
+  //crbug, err := fileMonorailIssue(event.GetIssue(), component)
+  //if err != nil {
+  //  return fmt.Errorf("fileMonorailIssue: %v\n", err)
+  //}
 
-  commentErr := commentAndClose(event.GetIssue(), crbug.Id)
+  commentErr := commentAndClose(event.GetIssue(), 12345/*crbug.Id*/)
 
-  fsdata.CrbugId = crbug.Id
-  err = saveFsData(fsdata)
+  //fsdata.CrbugId = crbug.Id
+  //err = saveFsData(fsdata)
 
   if commentErr != nil {
-    return fmt.Errorf("commentAndClose: %v\n", err)
+    return fmt.Errorf("commentAndClose: %v\n", commentErr)
   }
-  if err != nil {
-    return fmt.Errorf("saveFsData: %v\n", err)
-  }
+  //if err != nil {
+  //  return fmt.Errorf("saveFsData: %v\n", err)
+  //}
   return nil
 }
 
