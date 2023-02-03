@@ -10,6 +10,15 @@ const (
   kTarget = "prod"
 )
 
+func ComputeTokenSource(scope string) oauth2.TokenSource {
+	return oauth2.ReuseTokenSource(nil, computeSource{account: "", scopes: []string{scope}})
+}
+
+type computeSource struct {
+	account string
+	scopes  []string
+}
+
 func main() {
   ctx := context.Background()
   //audience, err := monorail.GetAudience(kTarget)

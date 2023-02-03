@@ -9,12 +9,37 @@ import (
   "io/ioutil"
   "time"
   "golang.org/x/oauth2"
+  "encoding/json"
 )
 
 type IssuesService struct {
   Token *oauth2.Token
   HttpClient *http.Client
   ApiBase string
+}
+
+
+type monorailIssue struct {
+	Name  string `json:"name"`
+	State struct {
+		Status string `json:"status"`
+	} `json:"status"`
+	FieldValues []struct {
+		Field string `json:"field"`
+		Value string `json:"value"`
+	} `json:"fieldValues"`
+	Owner struct {
+		User string `json:"user"`
+	} `json:"owner"`
+	CreatedTime  time.Time `json:"createTime"`
+	ModifiedTime time.Time `json:"modifyTime"`
+	ClosedTime   time.Time `json:"closeTime"`
+	Title string `json:"summary"`
+}
+
+type Issue struct {
+  Id int
+  // TODO: Populate more stuff I guess?
 }
 
 func contains(needle string, haystack []string) bool {
@@ -25,20 +50,6 @@ func contains(needle string, haystack []string) bool {
   }
   return false
 }
-
-//func createIdToken(ctx context.Context, audience string, idtoken_opts idtoken.ClientOption) (
-//    *oauth2.TokenSource, *oauth2.Token, error) {
-//  token_source, err := idtoken.NewTokenSource(ctx, audience, idtoken_opts)
-//	if err != nil {
-//		return nil, nil, fmt.Errorf("idtoken.NewTokenSource: %v", err)
-//	}
-//
-//	token, err := token_source.Token()
-//	if err != nil {
-//		return nil, nil, fmt.Errorf("token_source.Token: %v\n", err)
-//	}
-//  return &token_source, token, nil;
-//}
 
 func createHttpClient(token_source oauth2.TokenSource) (*http.Client, error) {
   transport := &oauth2.Transport{
@@ -123,7 +134,7 @@ type CreateIssueRequest struct {
   Components []string
 }
 
-func (s *IssuesService) CreateIssue(request *CreateIssueRequest) error {
+func (s *IssuesService) CreateIssue(request *CreateIssueRequest) (*Issue, error) {
   var components []string
   for _, component := range request.Components {
     components = append(components, fmt.Sprintf(`{ "component": "projects/%s/componentDefs/%s" }`, request.Project, component))
@@ -146,14 +157,28 @@ func (s *IssuesService) CreateIssue(request *CreateIssueRequest) error {
       ]
     },
     "description": "%s"
-  }`, request.Project, request.Summary, strings.Join(components, ","), priField, typeField, request.Description)
+  }`,
+  request.Project,
+  request.Summary,
+  strings.Join(components, ","),
+  priField,
+  typeField,
+  request.Description)
   
-  fmt.Printf("req\n%s\n", json);
-
   result, err := s.invokeApi([]byte(json), "Issues", "MakeIssue")
   if err != nil {
-    return fmt.Errorf("invokeApi: %v\n", err)
+    return nil, fmt.Errorf("invokeApi: %v\n", err)
   }
-  fmt.Printf("resp\n%s\n", string(result))
-  return nil
-}
+
+  var monorail_issue *monorailIssue
+  if err := json.Unmarshal(result, &monorail_issue); err != nil {
+		return nil, fmt.Errorf("Unmarshal: %v\n", err)
+	}
+
+  name_parts := strings.Split(monorail_issue.Name, "/")
+  id, err := strings.Atoi(name_parts[len(name_parts) - 1])
+  if err != nil {
+    return nil, fmt.Errorf("Atoi of %s: %v\n", name_parts[len(name_parts) - 1], err)
+  }
+  return &Issue{ Id: id }, nil
+} 

@@ -3,7 +3,7 @@ package p
 
 import (
   "golang.org/x/oauth2"
-  "github.com/google/go-github/v49/github"
+  "github.com/google/go-github/github"
   "fmt"
   "context"
   "time"
