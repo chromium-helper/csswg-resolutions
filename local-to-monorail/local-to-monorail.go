@@ -22,6 +22,8 @@ const (
   gcpProject = "chromium-csswg-helper"
   gcpGithubAPIKeySecret = "github-api-key"
   gcpFirestoreCollection = "resolution-db"
+  kResolutionsOwner = "chromium-helper"
+  kResolutionsRepo = "csswg-resolutions"
 )
 
 type FSResolutionData struct {
@@ -106,14 +108,12 @@ func commentAndClose(ghissue *github.Issue, crbug_id int) error {
 
   client := github.NewClient(token_client);
 
-  owner := ghissue.GetRepository().GetOwner().GetLogin()
-  owner_name := ghissue.GetRepository().GetOwner().GetName()
-  repo := ghissue.GetRepository().GetName()
-
-  fmt.Println("owner %s repo %s owner_name %s\n", owner, repo, owner_name)
+  // TODO: Figure out if I can get these from ghissue.
+  owner := kResolutionsOwner
+  repo := kResolutionsRepo
 
   // Add a comment
-  comment_text := fmt.Sprintf("I have filed crbug.com/%d\n\n", crbug_id)
+  comment_text := fmt.Sprintf("I have filed [crbug.com/%d](crbug.com/%d)\n\n", crbug_id, crbug_id)
   comment_text += "That is all that can be done here, closing issue."
   comment := &github.IssueComment{ Body: &comment_text }
   _, _, err = client.Issues.CreateComment(
@@ -201,38 +201,37 @@ func processIssuesEvent(event *github.IssuesEvent) error {
     return fmt.Errorf("crbug already filed %d\n", fsdata.CrbugId)
   }
 
-  //component := strings.Split(event.GetLabel().GetName(), ":")[1]
-  //crbug, err := fileMonorailIssue(event.GetIssue(), component)
-  //if err != nil {
-  //  return fmt.Errorf("fileMonorailIssue: %v\n", err)
-  //}
+  component := strings.Split(event.GetLabel().GetName(), ":")[1]
+  crbug, err := fileMonorailIssue(event.GetIssue(), component)
+  if err != nil {
+    return fmt.Errorf("fileMonorailIssue: %v\n", err)
+  }
 
-  commentErr := commentAndClose(event.GetIssue(), 12345/*crbug.Id*/)
+  commentErr := commentAndClose(event.GetIssue(), crbug.Id)
 
-  //fsdata.CrbugId = crbug.Id
-  //err = saveFsData(fsdata)
+  fsdata.CrbugId = crbug.Id
+  err = saveFsData(fsdata)
 
   if commentErr != nil {
     return fmt.Errorf("commentAndClose: %v\n", commentErr)
   }
-  //if err != nil {
-  //  return fmt.Errorf("saveFsData: %v\n", err)
-  //}
+  if err != nil {
+    return fmt.Errorf("saveFsData: %v\n", err)
+  }
   return nil
 }
 
 func HelloWorld(w http.ResponseWriter, r *http.Request) {
   payload, err := github.ValidatePayload(r, []byte(os.Getenv("GITHUB_SECRET_KEY")))
   if err != nil { 
-    panic(err)
+    log.Printf("ValidatePayload: ERROR: %v\n", err);
+    return;
   }
-  log.Printf("payload %v\n", payload)
-
   event, err := github.ParseWebHook(github.WebHookType(r), payload)
   if err != nil {
-    panic(err)
+    log.Printf("ParseWebHook: ERROR: %v\n", err);
+    return;
   }
-  log.Printf("event %v\n", event)
 
   switch event := event.(type) {
     case *github.IssuesEvent:
@@ -242,7 +241,8 @@ func HelloWorld(w http.ResponseWriter, r *http.Request) {
   }
 
   if err != nil {
-    panic(err)
+    log.Printf("process event: ERROR: %v\n", err);
+    return
   }
 }
 

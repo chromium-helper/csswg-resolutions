@@ -139,10 +139,9 @@ func (app *App) github_client() *github.Client {
 
 // Get all the issue comments for csswg since the given time.
 func (app *App) getIssueComments(since time.Time) ([]*github.IssueComment, error) {
-  sort := "created"
   opts := &github.IssueListCommentsOptions{
-    Sort: &sort,
-    Since: &since,
+    Sort: "created",
+    Since: since,
     ListOptions: github.ListOptions{ PerPage: 100 },
   }
 
@@ -262,8 +261,7 @@ func createIssueText(resolutions []string, commentURL string) string {
   for _, resolution := range resolutions {
     body += fmt.Sprintf("> %s\n", resolution)
   }
-  body += fmt.Sprintf("\n\nin %s\n", "TODO: commentURL")
-  body += fmt.Sprintf("TODO: Add some more help text\n")
+  body += fmt.Sprintf("\nin %s\n", commentURL)
   return body
 }
 
@@ -286,7 +284,6 @@ func (app *App) createNewIssue(resolution *CSSWGResolution, fsclient *gcpfs.Clie
     }
   }
 
-  log.Printf("labels %v", labels)
   request := &github.IssueRequest{
     Title: &title,
     Body: &body,
