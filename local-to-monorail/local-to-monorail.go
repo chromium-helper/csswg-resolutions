@@ -113,7 +113,7 @@ func commentAndClose(ghissue *github.Issue, crbug_id int) error {
   repo := kResolutionsRepo
 
   // Add a comment
-  comment_text := fmt.Sprintf("I have filed [crbug.com/%d](crbug.com/%d)\n\n", crbug_id, crbug_id)
+  comment_text := fmt.Sprintf("I have filed [crbug.com/%d](https://crbug.com/%d)\n\n", crbug_id, crbug_id)
   comment_text += "That is all that can be done here, closing issue."
   comment := &github.IssueComment{ Body: &comment_text }
   _, _, err = client.Issues.CreateComment(
