@@ -2,7 +2,7 @@ module local-to-monorail
 
 go 1.19
 
-replace github.com/chromium-helper/csswg-resolutions/monorail => ../monorail
+replace github.com/chromium-helper/csswg-resolutions/monorail => ../../monorail
 
 require (
 	cloud.google.com/go/firestore v1.9.0

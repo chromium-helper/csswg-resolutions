@@ -11,11 +11,9 @@ import (
   "regexp"
   "strings"
   "strconv"
-  "google.golang.org/grpc/status"
-  "google.golang.org/grpc/codes"
   gcpsm "cloud.google.com/go/secretmanager/apiv1"
   gcpsmpb "cloud.google.com/go/secretmanager/apiv1/secretmanagerpb"
-  gcpfs "cloud.google.com/go/firestore"
+  "github.com/chromium-helper/fsresolutions"
 )
 
 const (
@@ -33,8 +31,8 @@ const (
 type App struct {
   gh_client_ro *github.Client
   gh_client_rw *github.Client
-  Ctx context.Context
   StartTime time.Time
+  FSClient *fsresolutions.Client
 }
 
 type CSSWGResolution struct {
@@ -45,27 +43,24 @@ type CSSWGResolution struct {
   CommentURL string
 }
 
-type FSResolutionData struct {
-  CrbugId int `firestore:"crbug-id"`
-  CsswgDraftsId int `firestore:"csswg-drafts-id"`
-  CsswgResolutionsId int `firestore:"csswg-resolutions-id"`
-  ResolutionCommentIds []int64 `firestore:"resolution-comment-ids"`
-}
-
 // Creates a new app to use
-func NewApp(ctx context.Context) *App {
+func NewApp() *App {
+  fsclient, err := fsresolutions.NewClient(gcpProject, gcpFirestoreCollection)
+  if err != nil {
+    panic(err)
+  }
   return &App{
     gh_client_ro: github.NewClient(nil),
     gh_client_rw: nil,
-    Ctx: ctx,
     StartTime: time.Now(),
+    FSClient: fsclient,
   }
 }
 
 // Retrieves the github api token from gcp secret manager. Don't use unless you
 // need write access to github.
 func (app *App) getGithubAPIToken() (string, error) {
-  client, err := gcpsm.NewClient(app.Ctx)
+  client, err := gcpsm.NewClient(context.Background())
   if err != nil {
     return "", fmt.Errorf("gcpsm.NewClient: %v", err)
   }
@@ -79,7 +74,7 @@ func (app *App) getGithubAPIToken() (string, error) {
       ),
   }
 
-  secret, err := client.AccessSecretVersion(app.Ctx, req)
+  secret, err := client.AccessSecretVersion(context.Background(), req)
   if err != nil {
     return "", fmt.Errorf("gcpsm.AccessSecretVersion: %v\n", err)
   }
@@ -99,34 +94,10 @@ func (app *App) ensureGithubRWClient() error {
 
   token_source := oauth2.StaticTokenSource(
       &oauth2.Token{AccessToken: token})
-  token_client := oauth2.NewClient(app.Ctx, token_source)
+  token_client := oauth2.NewClient(context.Background(), token_source)
 
   app.gh_client_rw = github.NewClient(token_client);
   return nil
-}
-
-// Loads the last time this CF ran from gcp firestore
-func (app *App) loadLastRunTime() (time.Time, error) {
-  client, err := gcpfs.NewClient(app.Ctx, gcpProject)
-  if err != nil {
-    return time.Time{}, fmt.Errorf("gcpfs.NewClient: %v\n", err)
-  }
-  defer client.Close()
-
-  docsnap, err := client.Collection(gcpFirestoreCollection).Doc("last_run").Get(app.Ctx)
-  if err != nil {
-    return time.Time{}, fmt.Errorf("client.Collection.Doc.Get: %v\n", err)
-  }
-
-  type Data struct {
-    Time time.Time `firestore:"time"`
-  }
-  var data Data
-  err = docsnap.DataTo(&data)
-  if err != nil {
-    return time.Time{}, fmt.Errorf("docsnap.DataTo: %v\n", err)
-  }
-  return data.Time, nil
 }
 
 // Get the "best" github client (RW if available, RO otherwise)
@@ -148,7 +119,7 @@ func (app *App) getIssueComments(since time.Time) ([]*github.IssueComment, error
   var results []*github.IssueComment
   for {
     comments, resp, err := app.github_client().Issues.ListComments(
-      app.Ctx,
+      context.Background(),
       csswgOwner,
       csswgRepo,
       0,
@@ -214,30 +185,19 @@ func contains(needle int64, haystack []int64) bool {
 
 // Records the resolutions by creating issues if needed
 func (app *App) recordResolutionsIfNeeded(resolutions []*CSSWGResolution) error {
-  fsclient, err := gcpfs.NewClient(app.Ctx, gcpProject)
-  if err != nil {
-    return fmt.Errorf("gcpfs.NewClient: %v\n", err)
-  }
-  defer fsclient.Close()
-
   for _, resolution := range resolutions {
     // See if we have this issue in the firestore.
     docname := fmt.Sprintf("%d", resolution.IssueNumber)
-    docsnap, err := fsclient.Collection(gcpFirestoreCollection).Doc(docname).Get(app.Ctx)
-    if err != nil && status.Code(err) == codes.NotFound {
-      err = app.createNewIssue(resolution, fsclient, docname)
-      if err != nil {
-        return fmt.Errorf("app.createNewIssue: %v\n", err)
-      }
-      continue
-    } else if err != nil {
-      return fmt.Errorf("fsclient...: %v\n", err)
+    data, err := app.FSClient.LoadDataByDocName(docname)
+    if err != nil {
+       return fmt.Errorf("LoadDataByDocName: %v", err)
     }
 
-    var data FSResolutionData
-    err = docsnap.DataTo(&data)
-    if err != nil {
-      return fmt.Errorf("docsnap.DataTo: %v\n", err)
+    if data == nil {
+      if err = app.createNewIssue(resolution, docname); err != nil {
+        return fmt.Errorf("app.createNewIssue: %v", err)
+      }
+      continue
     }
 
     // We already recorded this.
@@ -248,9 +208,9 @@ func (app *App) recordResolutionsIfNeeded(resolutions []*CSSWGResolution) error 
       continue
     }
 
-    err = app.addResolutionComment(resolution, fsclient, docname, &data)
+    err = app.addResolutionComment(resolution, docname, data)
     if err != nil {
-      return fmt.Errorf("app.addResolutionComment: %v\n", err)
+      return fmt.Errorf("app.addResolutionComment: %v", err)
     }
   }
   return nil
@@ -265,12 +225,13 @@ func createIssueText(resolutions []string, commentURL string) string {
   return body
 }
 
-func (app *App) createNewIssue(resolution *CSSWGResolution, fsclient *gcpfs.Client, docname string) error {
+func (app *App) createNewIssue(resolution *CSSWGResolution, docname string) error {
   err := app.ensureGithubRWClient()
   if err != nil {
     return fmt.Errorf("ensure rw client: %v\n", err)
   }
-  csswgissue, _, err := app.github_client().Issues.Get(app.Ctx, csswgOwner, csswgRepo, resolution.IssueNumber)
+  csswgissue, _, err := app.github_client().Issues.Get(
+      context.Background(), csswgOwner, csswgRepo, resolution.IssueNumber)
   if err != nil {
     return fmt.Errorf("gh.Issues.Get: %v\n", err)
   }
@@ -292,68 +253,48 @@ func (app *App) createNewIssue(resolution *CSSWGResolution, fsclient *gcpfs.Clie
     request.Labels = &labels
   }
 
-  resissue, _, err := app.github_client().Issues.Create(app.Ctx, resOwner, resRepo, request)
+  resissue, _, err := app.github_client().Issues.Create(
+      context.Background(), resOwner, resRepo, request)
   if err != nil {
-    return fmt.Errorf("github.CreateIssue: %v\n", err)
+    return fmt.Errorf("github.CreateIssue: %v", err)
   }
   log.Printf("Created new issue #%d: %s\n", resissue.GetNumber(), title)
 
-  fsresolution := &FSResolutionData{
-    CrbugId: 0,
+  fsdata := &fsresolutions.FSResolutionData{
     CsswgDraftsId: csswgissue.GetNumber(),
     CsswgResolutionsId: resissue.GetNumber(),
     ResolutionCommentIds: []int64{resolution.CommentID},
   }
-  return app.saveFsResolution(fsclient, docname, fsresolution)
-}
-
-func (app *App) saveFsResolution(fsclient *gcpfs.Client, docname string, fsresolution *FSResolutionData) error {
-  _, err := fsclient.Collection(gcpFirestoreCollection).Doc(docname).Set(app.Ctx, fsresolution)
-  if err != nil {
-    return fmt.Errorf("fsclient.C.Doc.Set: %v\n", err)
+  if err = app.FSClient.SetData( docname, fsdata); err != nil {
+    return fmt.Errorf("SetData: %v", err)
   }
   return nil
 }
 
-func (app *App) addResolutionComment(resolution *CSSWGResolution, fsclient *gcpfs.Client, docname string, data *FSResolutionData) error {
+func (app *App) addResolutionComment(resolution *CSSWGResolution, docname string, data *fsresolutions.FSResolutionData) error {
   err := app.ensureGithubRWClient()
   if err != nil {
     return fmt.Errorf("ensure rw client: %v\n", err)
   }
   body := createIssueText(resolution.Resolutions, resolution.CommentURL)
   comment := &github.IssueComment{ Body: &body }
-  _, _, err = app.github_client().Issues.CreateComment(app.Ctx, resOwner, resRepo, data.CsswgResolutionsId, comment)
+  _, _, err = app.github_client().Issues.CreateComment(
+      context.Background(), resOwner, resRepo, data.CsswgResolutionsId, comment)
   if err != nil {
     return fmt.Errorf("github.CreateComment: %v\n", err)
   }
   log.Printf("Added comment to issue #%d\n", data.CsswgResolutionsId)
 
   data.ResolutionCommentIds = append(data.ResolutionCommentIds, resolution.CommentID)
-  return app.saveFsResolution(fsclient, docname, data)
-}
-
-func (app *App) updateLastRunTime(t time.Time) error {
-  client, err := gcpfs.NewClient(app.Ctx, gcpProject)
-  if err != nil {
-    return fmt.Errorf("gcpfs.NewClient: %v\n", err)
-  }
-  defer client.Close()
-
-  type Data struct {
-    Time time.Time `firestore:"time"`
-  }
-  data := &Data{ Time: t }
-
-  _, err = client.Collection(gcpFirestoreCollection).Doc("last_run").Set(app.Ctx, data)
-  if err != nil {
-    return fmt.Errorf("client.C.Doc.Set: %v\n", err)
+  if err = app.FSClient.UpdateDataSetResolutionCommentIds(docname, data); err != nil {
+    return fmt.Errorf("UpdateDataSetResolutionCommentIds: %v", err)
   }
   return nil
 }
 
 // Main run function for the app.
 func (app *App) run() error {
-  last_run_time, err := app.loadLastRunTime()
+  last_run_time, err := app.FSClient.LoadLastRunTime()
   if err != nil {
     log.Printf("loadLastRunTime: %v\n", err)
     return err
@@ -379,9 +320,8 @@ func (app *App) run() error {
     return err
   }
 
-  err = app.updateLastRunTime(app.StartTime)
-  if err != nil {
-    log.Printf("updateLastRunTime: %v\n", err)
+  if err = app.FSClient.UpdateLastRunTime(app.StartTime); err != nil {
+    log.Printf("UpdateLastRunTime: %v\n", err)
     return err
   }
   return nil
@@ -391,8 +331,8 @@ type PubSubMessage struct {
 	Data []byte `json:"data"`
 }
 
-// HelloPubSub consumes a Pub/Sub message.
-func HelloPubSub(ctx context.Context, m PubSubMessage) error {
-	return NewApp(ctx).run()
+// Entry point to the timer CF.
+func ParseCsswgResolutions(ctx context.Context, m PubSubMessage) error {
+	return NewApp().run()
 }
 
