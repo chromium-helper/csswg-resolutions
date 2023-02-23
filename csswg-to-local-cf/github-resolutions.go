@@ -109,7 +109,8 @@ func (app *App) github_client() *github.Client {
 }
 
 // Get all the issue comments for csswg since the given time.
-func (app *App) getIssueComments(since time.Time) ([]*github.IssueComment, error) {
+func (app *App) getIssueComments(since time.Time) (
+    []*github.IssueComment, error) {
   opts := &github.IssueListCommentsOptions{
     Sort: "created",
     Since: since,
@@ -144,7 +145,8 @@ func (app *App) getIssueComments(since time.Time) ([]*github.IssueComment, error
 }
 
 // Parse the github resolutions
-func parseResolutions(comments []*github.IssueComment) ([]*CSSWGResolution, error) {
+func parseResolutions(comments []*github.IssueComment) (
+    []*CSSWGResolution, error) {
   r, err := regexp.Compile("(?m)^[ `*]*RESOLVED: .*$")
   if err != nil {
     return nil, fmt.Errorf("regexp.Compile: %v\n", err)
@@ -184,7 +186,8 @@ func contains(needle int64, haystack []int64) bool {
 }
 
 // Records the resolutions by creating issues if needed
-func (app *App) recordResolutionsIfNeeded(resolutions []*CSSWGResolution) error {
+func (app *App) recordResolutionsIfNeeded(
+    resolutions []*CSSWGResolution) error {
   for _, resolution := range resolutions {
     // See if we have this issue in the firestore.
     docname := fmt.Sprintf("%d", resolution.IssueNumber)
@@ -221,11 +224,12 @@ func createIssueText(resolutions []string, commentURL string) string {
   for _, resolution := range resolutions {
     body += fmt.Sprintf("> %s\n", resolution)
   }
-  body += fmt.Sprintf("\nin %s\n", commentURL)
+  body += fmt.Sprintf("\nin %s", commentURL)
   return body
 }
 
-func (app *App) createNewIssue(resolution *CSSWGResolution, docname string) error {
+func (app *App) createNewIssue(
+    resolution *CSSWGResolution, docname string) error {
   err := app.ensureGithubRWClient()
   if err != nil {
     return fmt.Errorf("ensure rw client: %v\n", err)
@@ -271,7 +275,10 @@ func (app *App) createNewIssue(resolution *CSSWGResolution, docname string) erro
   return nil
 }
 
-func (app *App) addResolutionComment(resolution *CSSWGResolution, docname string, data *fsresolutions.FSResolutionData) error {
+func (app *App) addResolutionComment(
+    resolution *CSSWGResolution,
+    docname string,
+    data *fsresolutions.FSResolutionData) error {
   err := app.ensureGithubRWClient()
   if err != nil {
     return fmt.Errorf("ensure rw client: %v\n", err)
@@ -285,8 +292,10 @@ func (app *App) addResolutionComment(resolution *CSSWGResolution, docname string
   }
   log.Printf("Added comment to issue #%d\n", data.CsswgResolutionsId)
 
-  data.ResolutionCommentIds = append(data.ResolutionCommentIds, resolution.CommentID)
-  if err = app.FSClient.UpdateDataSetResolutionCommentIds(docname, data); err != nil {
+  data.ResolutionCommentIds =
+    append(data.ResolutionCommentIds, resolution.CommentID)
+  if err = app.FSClient.UpdateDataSetResolutionCommentIds(docname, data);
+     err != nil {
     return fmt.Errorf("UpdateDataSetResolutionCommentIds: %v", err)
   }
   return nil
