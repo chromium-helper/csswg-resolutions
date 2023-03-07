@@ -1,13 +1,14 @@
 package fsresolutions
 
 import (
-  "cloud.google.com/go/firestore"
   "context"
   "fmt"
-  "google.golang.org/api/iterator"
   "time"
-  "google.golang.org/grpc/status"
+
+  "cloud.google.com/go/firestore"
+  "google.golang.org/api/iterator"
   "google.golang.org/grpc/codes"
+  "google.golang.org/grpc/status"
 )
 
 const (
@@ -18,7 +19,8 @@ const (
   lastRunTimeDoc = "last_run"
 )
 
-// TODO(vmpstr): These need a good rename and a data wipe
+// TODO(vmpstr): These need a good rename and a data wipe to support
+// other repos like open-ui
 type FSResolutionData struct {
   // Version of the data
   Version string               `firestore:"version,omitempty"`
@@ -150,6 +152,12 @@ func (c *Client) UpdateDataSetCrbugId(
     name string, data *FSResolutionData) error {
   return c.updateDataSetUpdate(name, []firestore.Update{
     { Path: "crbug-id", Value: data.CrbugId }})
+}
+
+func (c *Client) UpdateDataSetHasPendingTriageEvents(
+    name string, data *FSResolutionData) error {
+  return c.updateDataSetUpdate(name, []firestore.Update{
+    { Path: "has-pending-triage-events", Value: data.HasPendingTriageEvents }})
 }
 
 func (c *Client) updateDataSetUpdate(

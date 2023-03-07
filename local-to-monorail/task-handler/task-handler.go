@@ -1,5 +1,4 @@
-// Package p contains an HTTP Cloud Function.
-package foo
+package triage_task_handler
 
 import (
 	"context"
@@ -10,9 +9,10 @@ import (
 	"net/http"
   "github.com/google/go-github/github"
   "golang.org/x/oauth2"
-  "os"
+  //"os"
   "regexp"
   "strings"
+  "strconv"
   gcpfs "cloud.google.com/go/firestore"
   gcpsm "cloud.google.com/go/secretmanager/apiv1"
   gcpsmpb "cloud.google.com/go/secretmanager/apiv1/secretmanagerpb"
@@ -225,28 +225,22 @@ func processIssuesEvent(event *github.IssuesEvent) error {
   return nil
 }
 
-func HelloWorld(w http.ResponseWriter, r *http.Request) {
-  payload, err := github.ValidatePayload(r, []byte(os.Getenv("GITHUB_SECRET_KEY")))
-  if err != nil { 
-    log.Printf("ValidatePayload: ERROR: %v\n", err);
-    return;
-  }
-  event, err := github.ParseWebHook(github.WebHookType(r), payload)
+func HandleQueueTask(w http.ResponseWriter, r *http.Request) {
+  err := r.ParseForm()
   if err != nil {
-    log.Printf("ParseWebHook: ERROR: %v\n", err);
-    return;
-  }
-
-  switch event := event.(type) {
-    case *github.IssuesEvent:
-      err = processIssuesEvent(event)
-    default:
-      log.Printf("not an issue event\n");
-  }
-
-  if err != nil {
-    log.Printf("process event: ERROR: %v\n", err);
+    log.Printf("ERROR: ParseForm: %v\n", err)
+    w.WriteHeader(http.StatusBadRequest)
     return
   }
+
+  csswg_resolutions_id, err := strconv.Atoi(r.FormValue("CsswgResolutionsId"))
+  if err != nil {
+    log.Printf("ERROR: Unexpected atoi %s: %v\n", r.FormValue("CsswgResolutionsId"), err)
+    w.WriteHeader(http.StatusBadRequest)
+    return
+  }
+
+  log.Printf("Processing csswg resolutions issue %d\n", csswg_resolutions_id)
+  w.WriteHeader(http.StatusOK)
 }
 
