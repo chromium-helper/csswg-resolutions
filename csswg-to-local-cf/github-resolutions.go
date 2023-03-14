@@ -13,7 +13,7 @@ import (
   "strconv"
   gcpsm "cloud.google.com/go/secretmanager/apiv1"
   gcpsmpb "cloud.google.com/go/secretmanager/apiv1/secretmanagerpb"
-  "github.com/chromium-helper/fsresolutions"
+  "github.com/chromium-helper/csswg-resolutions/fsresolutions"
 )
 
 const (

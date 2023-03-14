@@ -4,7 +4,7 @@ go 1.19
 
 require (
 	cloud.google.com/go/secretmanager v1.10.0
-	github.com/chromium-helper/fsresolutions v0.0.0-00010101000000-000000000000
+	github.com/chromium-helper/csswg-resolutions/fsresolutions v0.1.0
 	github.com/google/go-github v17.0.0+incompatible
 	golang.org/x/oauth2 v0.5.0
 )
@@ -35,5 +35,3 @@ require (
 	google.golang.org/grpc v1.53.0 // indirect
 	google.golang.org/protobuf v1.28.1 // indirect
 )
-
-replace github.com/chromium-helper/fsresolutions => ../fsresolutions

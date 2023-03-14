@@ -1,12 +1,13 @@
 package webhook_handler_cf
 
 import (
-  "net/http"
+  "context"
   "fmt"
   "log"
+  "net/http"
   "os"
   "strconv"
-  "context"
+  "strings"
   "time"
 
   "cloud.google.com/go/cloudtasks/apiv2/cloudtaskspb"
@@ -18,6 +19,8 @@ import (
 
 // Environment that needs to be configured.
 // GITHUB_SECRET_KEY: the secret webhook key to validate payload
+// GITHUB_LOGIN: github login -- used to filter comments by this account
+// GITHUB_ACTION_LABEL_PREFIX: github label prefix that causes an action
 // GCP_PROJECT_ID: the project where this is running
 // GCP_QUEUE_LOCATION: the data centre location of the task queue
 // GCP_QUEUE_ID: the name of the task queue
@@ -25,14 +28,18 @@ import (
 // GCP_TASK_HANDLER_URL: the url of the cloud function which handles the tasks
 // TRIAGE_GRACE_PERIOD_SECONDS: the number of seconds to delay running the task,
 //    allowing for more triager actions
+// GCP_INVOKER_ACCOUNT: the account that invokes the task handler.
 var (
   githubSecretKey = os.Getenv("GITHUB_SECRET_KEY")
+  githubLogin = os.Getenv("GITHUB_LOGIN")
+  githubActionLabelPrefix = os.Getenv("GITHUB_ACTION_LABEL_PREFIX")
 
   gcpProjectId = os.Getenv("GCP_PROJECT_ID")
   gcpQueueLocation = os.Getenv("GCP_QUEUE_LOCATION")
   gcpQueueId = os.Getenv("GCP_QUEUE_ID")
   gcpFsCollection = os.Getenv("GCP_FS_COLLECTION")
   gcpTaskHandlerUrl = os.Getenv("GCP_TASK_HANDLER_URL")
+  gcpInvokerAccount = os.Getenv("GCP_INVOKER_ACCOUNT")
 
   kTriageGracePeriod =
       time.Duration(mustInt(os.Getenv("TRIAGE_GRACE_PERIOD_SECONDS"))) * time.Second
@@ -49,21 +56,47 @@ func mustInt(s string) int {
 // Figures out if this is likely an event that we care about.
 // Note that this doesn't have to be 100% accurate. It should acts
 // as a quick filter for things we definitely don't care about.
-func ShouldCreateTaskForEvent(event *github.IssuesEvent) bool {
-  // We only care about labeled and commented events.
-  // For the comments, we'd want to also filter by collaborators, but that
-  // requires authentication. We'll have to do this in the task anyway.
-  if event.GetAction() != "labeled" && event.GetAction() != "commented" {
+func ShouldCreateTaskForIssuesEvent(event *github.IssuesEvent) bool {
+  // We only care about labeled events.
+  if event.GetAction() != "labeled" {
     return false
   }
 
-  // We also never handle "meta" tagged bugs
-  for _, label := range event.GetIssue().Labels {
+  if !strings.HasPrefix(event.GetLabel().GetName(), githubActionLabelPrefix) {
+    return false
+  }
+
+  return ShouldCreateTaskForGithubIssue(event.GetIssue())
+}
+
+func ShouldCreateTaskForIssueCommentEvent(event *github.IssueCommentEvent) bool {
+  // Only handle "created" comments
+  if event.GetAction() != "created" {
+    return false
+  }
+
+  // Don't handle comments made by githubLogin account
+  // We also want to filter by collaborators, but we don't want to login to
+  // check whether user is a collaborator.
+  if event.GetComment().GetUser().GetLogin() == githubLogin {
+    return false
+  }
+
+  return ShouldCreateTaskForGithubIssue(event.GetIssue())
+}
+
+
+func ShouldCreateTaskForGithubIssue(issue *github.Issue) bool {
+  if issue.GetState() != "open" {
+    return false
+  }
+
+  // We never handle "meta" tagged bugs
+  for _, label := range issue.Labels {
     if label.GetName() == "meta" {
       return false
     }
   }
-
   return true
 }
 
@@ -74,12 +107,17 @@ func ScheduleTask(fsdata *fsresolutions.FSResolutionData) error {
     return fmt.Errorf("cloudtasks.NewClient: %v", err)
   }
 
+  oidc_token := &cloudtaskspb.HttpRequest_OidcToken{
+    OidcToken: &cloudtaskspb.OidcToken{ ServiceAccountEmail: gcpInvokerAccount },
+  }
+
   http_request := &cloudtaskspb.HttpRequest{
     Url: gcpTaskHandlerUrl,
     Headers: map[string]string{
         "Content-Type": "application/x-www-form-urlencoded",
     },
     Body: []byte(fmt.Sprintf("CsswgResolutionsId=%d", fsdata.CsswgResolutionsId)),
+    AuthorizationHeader: oidc_token,
   }
 
   task := &cloudtaskspb.Task{
@@ -104,18 +142,14 @@ func ScheduleTask(fsdata *fsresolutions.FSResolutionData) error {
 // 1. Verify that we care about this issue
 // 2. Find the firestore entry and update has_pending_triage_events
 // 3. Create a task and schedule kTriageGracePeriod seconds in the future
-func ProcessIssuesEvent(event *github.IssuesEvent) error {
-  if !ShouldCreateTaskForEvent(event) {
-    return nil
-  }
-
+func ProcessGithubIssue(github_issue_number int) error {
   fsclient, err := fsresolutions.NewClient(gcpProjectId, gcpFsCollection)
   if err != nil {
     return fmt.Errorf("fsresolutions.NewClient: %v", err)
   }
   defer fsclient.Close()
 
-  fsdata, err := fsclient.LoadDataByCsswgResolutionsId(event.GetIssue().GetNumber())
+  fsdata, err := fsclient.LoadDataByCsswgResolutionsId(github_issue_number)
   if err != nil {
     return fmt.Errorf("LoadDataByCsswgResolutionsId: %v", err)
   }
@@ -154,9 +188,16 @@ func HandleGithubWebhook(w http.ResponseWriter, r *http.Request) {
     return;
   }
 
+  err = nil
   switch event := event.(type) {
     case *github.IssuesEvent:
-      err = ProcessIssuesEvent(event)
+      if ShouldCreateTaskForIssuesEvent(event) {
+        err = ProcessGithubIssue(event.GetIssue().GetNumber())
+      }
+    case *github.IssueCommentEvent:
+      if ShouldCreateTaskForIssueCommentEvent(event) {
+        err = ProcessGithubIssue(event.GetIssue().GetNumber())
+      }
     default:
       log.Printf("not an issue event\n");
   }

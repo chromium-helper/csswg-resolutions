@@ -3,35 +3,30 @@ package triage_task_handler
 import (
 	"context"
 	"fmt"
-	"github.com/chromium-helper/csswg-resolutions/monorail"
 	"google.golang.org/api/idtoken"
 	"log"
 	"net/http"
-  "github.com/google/go-github/github"
   "golang.org/x/oauth2"
-  //"os"
+  "os"
   "regexp"
   "strings"
   "strconv"
+
+	"github.com/chromium-helper/csswg-resolutions/monorail"
+  "github.com/google/go-github/github"
+	"github.com/chromium-helper/csswg-resolutions/fsresolutions"
   gcpfs "cloud.google.com/go/firestore"
   gcpsm "cloud.google.com/go/secretmanager/apiv1"
   gcpsmpb "cloud.google.com/go/secretmanager/apiv1/secretmanagerpb"
 )
 
 const (
-  gcpProject = "chromium-csswg-helper"
-  gcpGithubAPIKeySecret = "github-api-key"
-  gcpFirestoreCollection = "resolution-db"
-  kResolutionsOwner = "chromium-helper"
-  kResolutionsRepo = "csswg-resolutions"
+  gcpProjectId = os.Getenv("GCP_PROJECT_ID")
+  gcpGithubAPIKeySecret = os.Getenv("GCP_GITHUB_API_KEY_SECRET_NAME")
+  gcpFsCollection = os.Getenv("GCP_FS_COLLECTION")
+  githubLogin = os.Getenv("GITHUB_LOGIN")
+  githubRepo = os.Getenv("GITHUB_REPO")
 )
-
-type FSResolutionData struct {
-  CrbugId int `firestore:"crbug-id"`
-  CsswgDraftsId int `firestore:"csswg-drafts-id"`
-  CsswgResolutionsId int `firestore:"csswg-resolutions-id"`
-  ResolutionCommentIds []int64 `firestore:"resolution-comment-ids"`
-}
 
 func fileMonorailIssue(ghissue *github.Issue, component string) (*monorail.Issue, error) {
   audience, err := monorail.GetAudience("prod")
@@ -71,29 +66,6 @@ func fileMonorailIssue(ghissue *github.Issue, component string) (*monorail.Issue
   return issue, nil
 }
 
-func getGithubAPIToken() (string, error) {
-  ctx := context.Background()
-  client, err := gcpsm.NewClient(ctx)
-  if err != nil {
-    return "", fmt.Errorf("gcpsm.NewClient: %v", err)
-  }
-  defer client.Close()
-
-  req := &gcpsmpb.AccessSecretVersionRequest{
-    Name:
-      fmt.Sprintf("projects/%s/secrets/%s/versions/latest",
-        gcpProject,
-        gcpGithubAPIKeySecret,
-      ),
-  }
-
-  secret, err := client.AccessSecretVersion(ctx, req)
-  if err != nil {
-    return "", fmt.Errorf("gcpsm.AccessSecretVersion: %v\n", err)
-  }
-  return string(secret.Payload.GetData()), nil
-}
-
 func commentAndClose(ghissue *github.Issue, crbug_id int) error {
   token, err := getGithubAPIToken()
   if err != nil {
@@ -131,49 +103,6 @@ func commentAndClose(ghissue *github.Issue, crbug_id int) error {
     return fmt.Errorf("Issues.Edit: %v\n", err)
   }
   return nil
-}
-
-func saveFsData(fsdata *FSResolutionData) error {
-  ctx := context.Background()
-
-  client, err := gcpfs.NewClient(ctx, gcpProject)
-  if err != nil {
-    return fmt.Errorf("gcpfs.NewClient: %v\n", err)
-  }
-
-  docname := fmt.Sprintf("%d", fsdata.CsswgDraftsId)
-  _, err = client.Collection(gcpFirestoreCollection).Doc(docname).Update(
-      ctx, []gcpfs.Update{{ Path: "crbug-id", Value: fsdata.CrbugId }})
-  if err != nil {
-    return fmt.Errorf("doc.Update: %v\n", err)
-  }
-  return nil
-}
-
-func loadFsResolutionData(number int) (*FSResolutionData, error) {
-  ctx := context.Background()
-
-  client, err := gcpfs.NewClient(ctx, gcpProject)
-  if err != nil {
-    return nil, fmt.Errorf("gcpfs.NewClient: %v\n", err)
-  }
-
-  query := client.Collection(gcpFirestoreCollection).Where(
-      "csswg-resolutions-id", "==", number)
-  iter := query.Documents(ctx)
-  doc, err := iter.Next()
-  if err != nil {
-    // TODO: This could be iterator.Done, what should happen if
-    // we don't know about this issue in the firestore?
-    return nil, fmt.Errorf("iter.Next: %v\n", err)
-  }
-
-  var data FSResolutionData
-  err = doc.DataTo(&data)
-  if err != nil {
-    return nil, fmt.Errorf("doc.DataTo: %v\n", err)
-  }
-  return &data, nil
 }
 
 func processIssuesEvent(event *github.IssuesEvent) error {
@@ -225,6 +154,96 @@ func processIssuesEvent(event *github.IssuesEvent) error {
   return nil
 }
 
+
+
+
+
+
+
+type App struct {
+  FSClient *fsresolutions.Client
+  GithubClient *github.Client
+}
+
+func NewApp() (*App, error) {
+  fsclient, err := fsresolutions.NewClient(gcpProject, gcpFsCollection)
+  if err != nil {
+    return nil, fmt.Errorf("fsresolutions.NewClient: %v", err) 
+  }
+
+  return &App{
+    FSClient: fsclient,
+  }, nil
+}
+
+func GetGithubAPIToken(ctx context.Context) (string, error) {
+  client, err := gcpsm.NewClient(ctx)
+  if err != nil {
+    return "", fmt.Errorf("gcpsm.NewClient: %v", err)
+  }
+  defer client.Close()
+
+  req := &gcpsmpb.AccessSecretVersionRequest{
+    Name:
+      fmt.Sprintf("projects/%s/secrets/%s/versions/latest",
+        gcpProjectId,
+        gcpGithubAPIKeySecret,
+      ),
+  }
+
+  secret, err := client.AccessSecretVersion(ctx, req)
+  if err != nil {
+    return "", fmt.Errorf("gcpsm.AccessSecretVersion: %v\n", err)
+  }
+  return string(secret.Payload.GetData()), nil
+}
+
+func NewGithubClient() (*github.Client, error) {
+  ctx := context.Background()
+  token, err := GetGithubAPIToken(ctx)
+  if err != nil {
+    return nil, fmt.Errorf("GetGithubAPIToken: %v", err)
+  }
+
+  token_source := oauth2.StaticTokenSource(
+      &oauth2.Token{AccessToken: token})
+  token_client := oauth2.NewClient(ctx, token_source)
+  github.NewClient(token_client), nil
+}
+
+func fileNameFromData(fsdata *fsresolutions.FSResolutionData) string {
+  return fmt.Sprintf("%d", fsdata.CsswgDraftsId)
+}
+
+func (app *App) UpdateFsDataAndClose(fsdata *fsresolutions.FSResolutionData) {
+  err := app.FSClient.SetData(fileNameFromData(fsdata), fsdata)
+  // TODO: Rework this to return the value instead of panicking.
+  if err != nil {
+    panic(err)
+  }
+  app.FSClient.Close()
+}
+
+func (app *App) Run(csswg_resolutions_id int) error {
+  fsdata, err := app.FSClient.LoadDataByCsswgResolutionsId(csswg_resolutions_id)
+  if err != nil {
+    return fmt.Errorf("LoadDataByCsswgResolutionsId: %v", err)
+  }
+  fsdata.HasPendingTriageEvents = false
+  defer app.UpdateFsDataAndClose(fsdata)
+
+  githubClient, err := NewGithubClient()
+  if err != nil {
+    return fmt.Errorf("NewGithubClient: %v", err)
+  }
+  app.GithubClient = githubClient
+  defer app.GithubClient.Close()
+
+  // TODO: implement.......
+
+  return nil
+}
+
 func HandleQueueTask(w http.ResponseWriter, r *http.Request) {
   err := r.ParseForm()
   if err != nil {
@@ -242,5 +261,16 @@ func HandleQueueTask(w http.ResponseWriter, r *http.Request) {
 
   log.Printf("Processing csswg resolutions issue %d\n", csswg_resolutions_id)
   w.WriteHeader(http.StatusOK)
+
+  app, err := NewApp()
+  if err != nil {
+    log.Printf("ERROR: NewApp: %v\n", err)
+    return
+  }
+  err = app.Run(csswg_resolutions_id)
+  if err != nil {
+    log.Printf("ERROR: app.Run: %v\n", err)
+    return
+  }
 }
 
