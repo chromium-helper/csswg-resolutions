@@ -8,7 +8,6 @@ import (
 	"golang.org/x/oauth2"
 	"io/ioutil"
 	"net/http"
-	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -177,9 +176,6 @@ func (s *IssuesService) CreateIssue(request *CreateIssueRequest) (*Issue, error)
 	typeField := fmt.Sprintf("projects/%s/fieldDefs/10", request.Project)
 	priField := fmt.Sprintf("projects/%s/fieldDefs/11", request.Project)
 
-	replaceNewlinesRe := regexp.MustCompile(`\r?\n`)
-	description := replaceNewlinesRe.ReplaceAllString(request.Description, "\n")
-
 	wireRequest := &WireRequestType{
 		Parent: fmt.Sprintf("projects/%s", request.Project),
 		Issue: &WireIssueType{
@@ -191,7 +187,7 @@ func (s *IssuesService) CreateIssue(request *CreateIssueRequest) (*Issue, error)
 				&WireFieldValueType{Field: typeField, Value: "Task"},
 			},
 		},
-		Description: description,
+		Description: request.Description,
 	}
 
 	json_request, err := json.Marshal(wireRequest)
