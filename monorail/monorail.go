@@ -124,12 +124,117 @@ func (s *IssuesService) invokeApi(payload []byte, service string, method string)
 	return result[4:], nil
 }
 
+type ModifyIssueRequest struct {
+	// "chromium"
+	Project string
+
+	Crbug				int
+	Comment		  string
+	Owner				string
+	CcList			[]string
+
+	Components []string
+}
+
+func (s *IssuesService) ModifyIssue(request *ModifyIssueRequest) error {
+	type WireStatusType struct {
+		Status string `json:"status"`
+	}
+
+	type WireUserType struct {
+		User string `json:"user"`
+	}
+
+	type WireComponentType struct {
+		Component string `json:"component"`
+	}
+
+	type WireIssueType struct {
+		Name string `json:"name"`
+		Owner *WireUserType `json:"owner,omitempty"`
+		CcUsers			[]*WireUserType						`json:"cc_users,omitempty"`
+		Status *WireStatusType `json:"status,omitempty"`
+		Components  []*WireComponentType  `json:"components"`
+	}
+
+	type WireDeltaType struct {
+		Issue *WireIssueType `json:"issue"`
+		UpdateMask string `json:"update_mask"`
+	}
+
+	type WireRequestType struct {
+		Deltas []*WireDeltaType `json:"deltas"`
+		CommentContent string `json:"comment_content"`
+		NotifyType string `json:"notify_type"`
+	}
+
+	var update_mask []string
+
+	status := "Untriaged"
+	var owner *WireUserType
+	if request.Owner != "" {
+		owner = &WireUserType{ User: fmt.Sprintf("users/%s", request.Owner) }
+		status = "Assigned"
+		update_mask = append(update_mask, "status")
+		update_mask = append(update_mask, "owner")
+	}
+
+	var cc_users []*WireUserType
+	for _, cc := range request.CcList {
+		cc_users = append(cc_users, &WireUserType{ User: fmt.Sprintf("users/%s", cc) })
+	}
+	if len(cc_users) != 0 {
+		update_mask = append(update_mask, "ccUsers")
+	}
+
+	var components []*WireComponentType
+	for _, component := range request.Components {
+		components = append(
+			components,
+			&WireComponentType{Component: fmt.Sprintf("projects/%s/componentDefs/%s", request.Project, component)},
+		)
+	}
+	if len(components) != 0 {
+		update_mask = append(update_mask, "components")
+	}
+
+	wireRequest := &WireRequestType{
+		Deltas: []*WireDeltaType{
+			&WireDeltaType{ 
+				Issue: &WireIssueType{
+					Name: fmt.Sprintf("projects/%s/issues/%d", request.Project, request.Crbug),
+					Owner: owner,
+					CcUsers: cc_users,
+					Status: &WireStatusType{ Status: status },
+					Components: components,
+				},
+				UpdateMask: strings.Join(update_mask, ","),
+			},
+		},
+		CommentContent: request.Comment,
+		NotifyType: "EMAIL",
+	}
+
+	json_request, err := json.Marshal(wireRequest)
+	if err != nil {
+		return fmt.Errorf("Marshal: %v", err)
+	}
+
+	_, err = s.invokeApi([]byte(json_request), "Issues", "ModifyIssues")
+	if err != nil {
+		return fmt.Errorf("invokeApi: %v", err)
+	}
+	return nil
+}
+
 type CreateIssueRequest struct {
 	// "chromium"
 	Project string
 
 	Summary     string
 	Description string
+	Owner				string
+	CcList			[]string
 
 	Components []string
 }
@@ -143,12 +248,18 @@ func (s *IssuesService) CreateIssue(request *CreateIssueRequest) (*Issue, error)
 		Status string `json:"status"`
 	}
 
+	type WireUserType struct {
+		User string `json:"user"`
+	}
+
 	type WireFieldValueType struct {
 		Field string `json:"field"`
 		Value string `json:"value"`
 	}
 
 	type WireIssueType struct {
+		Owner				*WireUserType							`json:"owner,omitempty"`
+		CcUsers			[]*WireUserType						`json:"cc_users,omitempty"`
 		Status      *WireStatusType       `json:"status"`
 		Summary     string                `json:"summary"`
 		Components  []*WireComponentType  `json:"components"`
@@ -159,6 +270,18 @@ func (s *IssuesService) CreateIssue(request *CreateIssueRequest) (*Issue, error)
 		Parent      string         `json:"parent"`
 		Issue       *WireIssueType `json:"issue"`
 		Description string         `json:"description"`
+	}
+
+	status := "Untriaged"
+	var owner *WireUserType
+	if request.Owner != "" {
+		owner = &WireUserType{ User: fmt.Sprintf("users/%s", request.Owner) }
+		status = "Assigned"
+	}
+
+	var cc_users []*WireUserType
+	for _, cc := range request.CcList {
+		cc_users = append(cc_users, &WireUserType{ User: fmt.Sprintf("users/%s", cc) })
 	}
 
 	var components []*WireComponentType
@@ -179,7 +302,9 @@ func (s *IssuesService) CreateIssue(request *CreateIssueRequest) (*Issue, error)
 	wireRequest := &WireRequestType{
 		Parent: fmt.Sprintf("projects/%s", request.Project),
 		Issue: &WireIssueType{
-			Status:     &WireStatusType{Status: "Untriaged"},
+			Owner: 			owner,
+			CcUsers:		cc_users,
+			Status:     &WireStatusType{Status: status},
 			Summary:    request.Summary,
 			Components: components,
 			FieldValues: []*WireFieldValueType{

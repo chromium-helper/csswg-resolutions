@@ -33,6 +33,15 @@ type App struct {
 	GithubClient *github.Client
 }
 
+type Directive struct {
+	Components []string
+	Crbug int
+	Owner string
+	CcList []string
+	Commenter string
+	Comment string
+}
+
 func NewApp() (*App, error) {
 	fsclient, err := fsresolutions.NewClient(gcpProjectId, gcpFsCollection)
 	if err != nil {
@@ -82,7 +91,7 @@ func fileNameFromData(fsdata *fsresolutions.FSResolutionData) string {
 	return fmt.Sprintf("%d", fsdata.CsswgDraftsId)
 }
 
-func (app *App) FileMonorailIssue(ghissue *github.Issue, components []string) (*monorail.Issue, error) {
+func (app *App) UpdateMonorailIssue(ghissue *github.Issue, directive *Directive) (*monorail.Issue, error) {
 	audience, err := monorail.GetAudience("prod")
 	if err != nil {
 		return nil, fmt.Errorf("GetAudience: %v", err)
@@ -101,20 +110,28 @@ func (app *App) FileMonorailIssue(ghissue *github.Issue, components []string) (*
 
 	description := ghissue.GetBody()
 	description += "\n\n"
-	description += "If no action is needed, feel free to close this bug. Otherwise, please prioritize the work needed for the above resolutions."
-	description += "\n\n"
-	description += fmt.Sprintf("Note that this issue has been triaged via https://github.com/chromium-helper/csswg-resolutions/issues/%d", ghissue.GetNumber())
-	description += "\n\n"
-
-	request := &monorail.CreateIssueRequest{
-		Project:     "chromium",
-		Summary:     ghissue.GetTitle(),
-		Description: description,
-		Components:  components,
+	if len(directive.Comment) != 0 {
+		description += fmt.Sprintf("%s left an additional comment:\n%s\n\n", directive.Commenter, directive.Comment)
 	}
-	issue, err := service.CreateIssue(request)
-	if err != nil {
-		return nil, fmt.Errorf("monorail.CreateIssue: %v", err)
+	description += fmt.Sprintf("This issue has been triaged via https://github.com/chromium-helper/csswg-resolutions/issues/%d\n", ghissue.GetNumber())
+
+	if directive.Crbug == 0 {
+		description += "If no action is needed, feel free to close this bug. Otherwise, please prioritize the work needed for the above resolutions."
+		description += "\n\n"
+
+		request := &monorail.CreateIssueRequest{
+			Project:     "chromium",
+			Summary:     ghissue.GetTitle(),
+			Description: description,
+			Components:  directive.Components,
+			Owner:			 directive.Owner,
+			CcList:      directive.CcList,
+		}
+		issue, err := service.CreateIssue(request)
+		if err != nil {
+			return nil, fmt.Errorf("monorail.CreateIssue: %v", err)
+		}
+	} else {
 	}
 	return issue, nil
 }
@@ -143,6 +160,21 @@ func (app *App) CommentAndClose(ghissue *github.Issue, crbug_id int) error {
 	return nil
 }
 
+func ParseComponents(issue *github.Issue) {
+	var components []string
+	for _, label := range issue.Labels {
+		if strings.HasPrefix(label.GetName(), componentLabelPrefix) {
+			components = append(components, label.GetName()[len(componentLabelPrefix):])
+		}
+
+		// We should still verify meta labels
+		if label.GetName() == metaBugLabel {
+			return nil, true
+		}
+	}
+	return components, false
+}
+
 func (app *App) ProcessIssue(fsdata *fsresolutions.FSResolutionData) error {
 	// We already have a bug filed (TODO: maybe we need to add a comment?)
 	if fsdata.CrbugId != 0 {
@@ -160,32 +192,40 @@ func (app *App) ProcessIssue(fsdata *fsresolutions.FSResolutionData) error {
 		return nil
 	}
 
-	var components []string
-	for _, label := range issue.Labels {
-		if strings.HasPrefix(label.GetName(), componentLabelPrefix) {
-			components = append(components, label.GetName()[len(componentLabelPrefix):])
-		}
-
-		// We should still verify meta labels
-		if label.GetName() == metaBugLabel {
-			return nil
-		}
-	}
-
-	// We need a component (TODO: or a crbug: comment)
-	if len(components) == 0 {
+	components, skip := ParseComponents(issue)
+	if skip {
 		return nil
 	}
 
-	// TODO: Process issue comments from collaborators
-
-	crbug, err := app.FileMonorailIssue(issue, components)
+	collaborators, _, err := app.GithubClient.Repositories.ListCollaborators(ctx, githubLogin, githubRepo)
 	if err != nil {
-		return fmt.Errorf("FileMonorailIssue: %v", err)
+		return fmt.Errorf("ListCollaborators: %v")
+	}
+
+	directive, err := ParseDirective(issue, collaborators)
+	if err != nil {
+		return fmt.Errorf("ParseDirectives: %v")
+	}
+
+	// We need a component or a crbug
+	if len(directive.Components) == 0 && directive.Crbug == 0 {
+		return nil
+	}
+
+	crbug, err := app.UpdateMonorailIssue(issue, directive)
+	if err != nil {
+		return fmt.Errorf("UpdateMonorailIssue: %v", err)
+	}
+
+	var action string
+	if directive.Crbug == 0 {
+		action = "filed"
+	} else {
+		action = "left a comment on"
 	}
 
 	fsdata.CrbugId = crbug.Id
-	err = app.CommentAndClose(issue, crbug.Id)
+	err = app.CommentAndClose(action, issue, crbug.Id)
 	if err != nil {
 		return fmt.Errorf("CommentAndClose: %v", err)
 	}
