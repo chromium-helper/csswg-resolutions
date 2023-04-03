@@ -8,6 +8,7 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"regexp"
 	"strconv"
 	"strings"
 
@@ -110,11 +111,12 @@ func (app *App) UpdateMonorailIssue(ghissue *github.Issue, directive *Directive)
 
 	description := ghissue.GetBody()
 	description += "\n\n"
-	if len(directive.Comment) != 0 {
+	if directive.Comment != "" {
 		description += fmt.Sprintf("%s left an additional comment:\n%s\n\n", directive.Commenter, directive.Comment)
 	}
 	description += fmt.Sprintf("This issue has been triaged via https://github.com/chromium-helper/csswg-resolutions/issues/%d\n", ghissue.GetNumber())
 
+	var issue *monorail.Issue
 	if directive.Crbug == 0 {
 		description += "If no action is needed, feel free to close this bug. Otherwise, please prioritize the work needed for the above resolutions."
 		description += "\n\n"
@@ -127,20 +129,31 @@ func (app *App) UpdateMonorailIssue(ghissue *github.Issue, directive *Directive)
 			Owner:			 directive.Owner,
 			CcList:      directive.CcList,
 		}
-		issue, err := service.CreateIssue(request)
+		issue, err = service.CreateIssue(request)
 		if err != nil {
 			return nil, fmt.Errorf("monorail.CreateIssue: %v", err)
 		}
 	} else {
+		request := &monorail.ModifyIssueRequest{
+			Project:		"chromium",
+			Crbug:			directive.Crbug,
+			Comment:		description,
+			// TODO(vmpstr): Once we get permission, add owners/cc/components
+		}
+		err = service.ModifyIssue(request)
+		if err != nil {
+			return nil, fmt.Errorf("monorail.ModifyIssue: %v", err)
+		}
+		issue = &monorail.Issue{ Id: directive.Crbug }
 	}
 	return issue, nil
 }
 
-func (app *App) CommentAndClose(ghissue *github.Issue, crbug_id int) error {
+func (app *App) CommentAndClose(action string, ghissue *github.Issue, crbug_id int) error {
 	ctx := context.Background()
 
 	// Add a comment
-	comment_text := fmt.Sprintf("I have filed [crbug.com/%d](https://crbug.com/%d)\n\n", crbug_id, crbug_id)
+	comment_text := fmt.Sprintf("I have %s [crbug.com/%d](https://crbug.com/%d)\n\n", action, crbug_id, crbug_id)
 	comment_text += "That is all that can be done here, closing issue."
 	comment := &github.IssueComment{Body: &comment_text}
 	_, _, err := app.GithubClient.Issues.CreateComment(
@@ -160,7 +173,7 @@ func (app *App) CommentAndClose(ghissue *github.Issue, crbug_id int) error {
 	return nil
 }
 
-func ParseComponents(issue *github.Issue) {
+func ParseComponents(issue *github.Issue) ([]string, bool) {
 	var components []string
 	for _, label := range issue.Labels {
 		if strings.HasPrefix(label.GetName(), componentLabelPrefix) {
@@ -173,6 +186,69 @@ func ParseComponents(issue *github.Issue) {
 		}
 	}
 	return components, false
+}
+
+func (app *App) ParseDirective(issue *github.Issue) (*Directive, bool, error) {
+	var directive Directive
+	var skip bool
+	directive.Components, skip = ParseComponents(issue)
+	if skip {
+		return nil, true, nil
+	}
+
+	ctx := context.Background()
+	collaborators, _, err := app.GithubClient.Repositories.ListCollaborators(ctx, githubLogin, githubRepo, nil)
+	if err != nil {
+		return nil, false, fmt.Errorf("ListCollaborators: %v")
+	}
+
+	collaborator_set := make(map[string]bool)
+	for _, collaborator := range collaborators {
+		collaborator_set[collaborator.GetLogin()] = true
+	}
+
+	get_user := func(input string) string {
+		user := strings.Trim(input, " ")
+		if !strings.Contains(user, "@") {
+			user += "@chromium.org"
+		}
+		return user
+	}
+
+	comments, _, err := app.GithubClient.Issues.ListComments(ctx, githubLogin, githubRepo, issue.GetNumber(), nil)
+	if err != nil {
+		return nil, false, fmt.Errorf("ListComments: %v")
+	}
+
+	for _, comment := range comments {
+		if !collaborator_set[comment.GetUser().GetLogin()] {
+			continue
+		}
+
+	  lower_body := strings.ToLower(comment.GetBody())
+		lines := strings.Split(lower_body, "\n")
+		for _, line := range lines {
+			if strings.HasPrefix(line, "crbug:") || strings.HasPrefix(line, "bug:") {
+				re := regexp.MustCompile(`[0-9]{5,}`)
+				directive.Crbug, err = strconv.Atoi(re.FindString(line))
+				if err != nil {
+					fmt.Printf("WARNING: Could not parse crbug from '%s'\n", line)
+					directive.Crbug = 0
+				}
+			} else if strings.HasPrefix(line, "owner:") {
+				directive.Owner = get_user(line[len("owner:"):])
+			} else if strings.HasPrefix(line, "cc:") {
+				parts := strings.Split(line[len("cc:"):], ",")
+				for _, part := range parts {
+					directive.CcList = append(directive.CcList, get_user(strings.Trim(part, " ")))
+				}
+			} else if strings.HasPrefix(line, "comment:") {
+				directive.Comment = strings.Trim(line[len("comment:"):], " ")
+				directive.Commenter = comment.GetUser().GetLogin();
+			}
+		}
+	}
+	return &directive, false, nil
 }
 
 func (app *App) ProcessIssue(fsdata *fsresolutions.FSResolutionData) error {
@@ -192,23 +268,13 @@ func (app *App) ProcessIssue(fsdata *fsresolutions.FSResolutionData) error {
 		return nil
 	}
 
-	components, skip := ParseComponents(issue)
-	if skip {
-		return nil
-	}
-
-	collaborators, _, err := app.GithubClient.Repositories.ListCollaborators(ctx, githubLogin, githubRepo)
-	if err != nil {
-		return fmt.Errorf("ListCollaborators: %v")
-	}
-
-	directive, err := ParseDirective(issue, collaborators)
+	directive, skip, err := app.ParseDirective(issue)
 	if err != nil {
 		return fmt.Errorf("ParseDirectives: %v")
 	}
 
 	// We need a component or a crbug
-	if len(directive.Components) == 0 && directive.Crbug == 0 {
+	if skip || (len(directive.Components) == 0 && directive.Crbug == 0) {
 		return nil
 	}
 
@@ -221,7 +287,7 @@ func (app *App) ProcessIssue(fsdata *fsresolutions.FSResolutionData) error {
 	if directive.Crbug == 0 {
 		action = "filed"
 	} else {
-		action = "left a comment on"
+		action = "updated"
 	}
 
 	fsdata.CrbugId = crbug.Id
