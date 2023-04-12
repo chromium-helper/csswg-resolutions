@@ -225,24 +225,24 @@ func (app *App) ParseDirective(issue *github.Issue) (*Directive, bool, error) {
 			continue
 		}
 
-	  lower_body := strings.ToLower(comment.GetBody())
-		lines := strings.Split(lower_body, "\n")
+		lines := strings.Split(comment.GetBody(), "\n")
 		for _, line := range lines {
-			if strings.HasPrefix(line, "crbug:") || strings.HasPrefix(line, "bug:") {
+			lower_line := strings.ToLower(line);
+			if strings.HasPrefix(lower_line, "crbug:") || strings.HasPrefix(lower_line, "bug:") {
 				re := regexp.MustCompile(`[0-9]{5,}`)
 				directive.Crbug, err = strconv.Atoi(re.FindString(line))
 				if err != nil {
 					fmt.Printf("WARNING: Could not parse crbug from '%s'\n", line)
 					directive.Crbug = 0
 				}
-			} else if strings.HasPrefix(line, "owner:") {
+			} else if strings.HasPrefix(lower_line, "owner:") {
 				directive.Owner = get_user(line[len("owner:"):])
-			} else if strings.HasPrefix(line, "cc:") {
+			} else if strings.HasPrefix(lower_line, "cc:") {
 				parts := strings.Split(line[len("cc:"):], ",")
 				for _, part := range parts {
 					directive.CcList = append(directive.CcList, get_user(strings.Trim(part, " ")))
 				}
-			} else if strings.HasPrefix(line, "comment:") {
+			} else if strings.HasPrefix(lower_line, "comment:") {
 				directive.Comment = strings.Trim(line[len("comment:"):], " ")
 				directive.Commenter = comment.GetUser().GetLogin();
 			}
