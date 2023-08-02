@@ -208,7 +208,7 @@ func (app *App) ParseDirective(issue *github.Issue) (*Directive, bool, error) {
 	}
 
 	get_user := func(input string) string {
-		user := strings.Trim(input, " ")
+		user := strings.Trim(input, " \n\r")
 		if !strings.Contains(user, "@") {
 			user += "@chromium.org"
 		}
@@ -240,10 +240,10 @@ func (app *App) ParseDirective(issue *github.Issue) (*Directive, bool, error) {
 			} else if strings.HasPrefix(lower_line, "cc:") {
 				parts := strings.Split(line[len("cc:"):], ",")
 				for _, part := range parts {
-					directive.CcList = append(directive.CcList, get_user(strings.Trim(part, " ")))
+					directive.CcList = append(directive.CcList, get_user(strings.Trim(part, " \n\r")))
 				}
 			} else if strings.HasPrefix(lower_line, "comment:") {
-				directive.Comment = strings.Trim(line[len("comment:"):], " ")
+				directive.Comment = strings.Trim(line[len("comment:"):], " \n\r")
 				directive.Commenter = comment.GetUser().GetLogin();
 			}
 		}
